@@ -28,6 +28,18 @@ export interface PaperPosition {
   shares: number;
 }
 
+/** What actually moved on a stock fill — the inputs cost-basis accounting needs. */
+export interface PaperFillDetail {
+  side: "buy" | "sell";
+  symbol: string;
+  token: `0x${string}`;
+  /** Whole shares filled (paper carries no multiplier, so 1 share = 1e18 raw). */
+  shares: number;
+  priceUsd: number;
+  /** USDG actually spent (buy) or received (sell), slippage included. */
+  cashUsdg: number;
+}
+
 export interface PaperFillResult {
   ok: boolean;
   reason?: string;
@@ -35,6 +47,8 @@ export interface PaperFillResult {
   positions: PaperPosition[];
   /** Human receipt line, e.g. "paper fill: 0.0138 QQQ @ $724.51 (px live)". */
   receipt?: string;
+  /** Present only for stock buys/sells — vault moves and no-ops carry no basis. */
+  fill?: PaperFillDetail;
 }
 
 const round6 = (n: number) => Math.round(n * 1e6) / 1e6;
@@ -106,6 +120,9 @@ export function applyPaperIntent(
       book: next,
       positions: pos,
       receipt: `paper fill: +${shares.toFixed(4)} ${symbol} @ $${px.priceUsd.toFixed(2)} (${staleTag})`,
+      // Cost basis takes the CASH SPENT (n), not shares×price: the slippage is a
+      // real cost of the position and belongs in its basis.
+      fill: { side: "buy", symbol, token: stockToken, shares, priceUsd: px.priceUsd, cashUsdg: n },
     };
   }
 
@@ -121,6 +138,8 @@ export function applyPaperIntent(
     book: next,
     positions: pos.filter((p) => p.shares > 1e-9),
     receipt: `paper fill: −${actualShares.toFixed(4)} ${symbol} @ $${px.priceUsd.toFixed(2)} (${staleTag})`,
+    // Proceeds are net of slippage — the cash that actually landed.
+    fill: { side: "sell", symbol, token: stockToken, shares: actualShares, priceUsd: px.priceUsd, cashUsdg: round6(proceeds) },
   };
 }
 

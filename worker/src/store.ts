@@ -114,6 +114,18 @@ function getDb(): DatabaseSync {
       at INTEGER NOT NULL DEFAULT (unixepoch())
     );
     CREATE INDEX IF NOT EXISTS decisions_agent_time ON decisions (agent_id, at DESC);
+    -- Weighted-average cost basis per held symbol (see basis.ts). Quantities are
+    -- 18dp RAW units and cost is 6dp USDG, both as decimal strings because
+    -- sqlite has no bigint — parsed straight back to BigInt on read.
+    -- Basis lives per RAW unit, so ERC-8056 splits never disturb it.
+    CREATE TABLE IF NOT EXISTS cost_basis (
+      agent_id TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      qty_raw TEXT NOT NULL,
+      cost_usdg TEXT NOT NULL,
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      PRIMARY KEY (agent_id, symbol)
+    );
   `);
   for (const ddl of [
     "ALTER TABLE equity ADD COLUMN positions_usdg REAL NOT NULL DEFAULT 0",
@@ -128,6 +140,15 @@ function getDb(): DatabaseSync {
     "ALTER TABLE trades ADD COLUMN sim_gas TEXT",
     // Attribution link: which decision produced this trade (see decisions table).
     "ALTER TABLE trades ADD COLUMN decision_id TEXT",
+    // Fill economics — what actually moved, so P&L is computable per round-trip.
+    "ALTER TABLE trades ADD COLUMN fill_side TEXT",
+    "ALTER TABLE trades ADD COLUMN fill_qty_raw TEXT",
+    "ALTER TABLE trades ADD COLUMN fill_price_usd REAL",
+    "ALTER TABLE trades ADD COLUMN realized_pnl_usdg REAL",
+    // How the fill figures were obtained: 'paper' (exact, simulated at the oracle
+    // price) or 'quote' (live swap, taken from the pre-trade QuoterV2 simulation
+    // rather than a parsed receipt). Never silently mix the two in analysis.
+    "ALTER TABLE trades ADD COLUMN basis_source TEXT",
   ]) {
     try {
       db.exec(ddl);
@@ -163,6 +184,15 @@ export interface TradeRow {
   sim_gas?: string;
   /** Attribution: the decisions.id that produced this trade (null for legacy rows). */
   decision_id?: string;
+  /** Fill economics — set on filled trades so P&L is computable per round-trip. */
+  fill_side?: "buy" | "sell";
+  /** 18dp raw units filled, as a decimal string. */
+  fill_qty_raw?: string;
+  fill_price_usd?: number;
+  /** 6dp-derived USDG booked on this fill (sells only; buys are always 0). */
+  realized_pnl_usdg?: number;
+  /** 'paper' (exact) or 'quote' (live swap, from the pre-trade simulation). */
+  basis_source?: "paper" | "quote";
 }
 
 /** One row in the decisions table — the proposal, its reasoning, and its fate. */
@@ -303,8 +333,9 @@ export async function addTrade(row: TradeRow): Promise<void> {
     getDb()
       .prepare(
         `INSERT INTO trades (agent_id, kind, target, sell_token, buy_token, amount_usdg, user_op_hash, tx_hash, status, reject_rule,
-                             sim_quote_out, sim_min_out, sim_fee_tier, sim_gas, decision_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                             sim_quote_out, sim_min_out, sim_fee_tier, sim_gas, decision_id,
+                             fill_side, fill_qty_raw, fill_price_usd, realized_pnl_usdg, basis_source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         row.agent_id,
@@ -322,6 +353,11 @@ export async function addTrade(row: TradeRow): Promise<void> {
         row.sim_fee_tier ?? null,
         row.sim_gas ?? null,
         row.decision_id ?? null,
+        row.fill_side ?? null,
+        row.fill_qty_raw ?? null,
+        row.fill_price_usd ?? null,
+        row.realized_pnl_usdg ?? null,
+        row.basis_source ?? null,
       );
   } catch (e) {
     console.error("[store] trade insert failed:", e);
@@ -439,6 +475,62 @@ export async function getSpentTodayUsdg(agentId: string): Promise<number> {
     )
     .get(agentId) as { spent: number } | undefined;
   return row?.spent ?? 0;
+}
+
+// ── cost basis — weighted-average, per symbol (see basis.ts) ──────────────
+
+/** Load a symbol's basis. Missing row = a flat position, not an error. */
+export function getBasis(agentId: string, symbol: string): { qtyRaw: bigint; costUsdg: bigint } {
+  try {
+    const row = getDb()
+      .prepare("SELECT qty_raw, cost_usdg FROM cost_basis WHERE agent_id = ? AND symbol = ?")
+      .get(agentId, symbol) as { qty_raw: string; cost_usdg: string } | undefined;
+    if (!row) return { qtyRaw: 0n, costUsdg: 0n };
+    return { qtyRaw: BigInt(row.qty_raw), costUsdg: BigInt(row.cost_usdg) };
+  } catch {
+    return { qtyRaw: 0n, costUsdg: 0n };
+  }
+}
+
+/** Persist a symbol's basis; a fully-closed position drops the row entirely. */
+export function setBasis(agentId: string, symbol: string, b: { qtyRaw: bigint; costUsdg: bigint }): void {
+  try {
+    const db = getDb();
+    if (b.qtyRaw <= 0n) {
+      db.prepare("DELETE FROM cost_basis WHERE agent_id = ? AND symbol = ?").run(agentId, symbol);
+      return;
+    }
+    db.prepare(
+      `INSERT INTO cost_basis (agent_id, symbol, qty_raw, cost_usdg, updated_at)
+       VALUES (?, ?, ?, ?, unixepoch())
+       ON CONFLICT(agent_id, symbol) DO UPDATE SET
+         qty_raw = excluded.qty_raw, cost_usdg = excluded.cost_usdg, updated_at = excluded.updated_at`,
+    ).run(agentId, symbol, b.qtyRaw.toString(), b.costUsdg.toString());
+  } catch (e) {
+    console.error("[store] basis update failed:", e);
+  }
+}
+
+/** Realized P&L booked across closed (or partly closed) round trips. */
+export function getRealizedPnlUsdg(agentId: string, sinceUnix?: number): number {
+  try {
+    const row = (
+      sinceUnix
+        ? getDb()
+            .prepare(
+              "SELECT COALESCE(SUM(realized_pnl_usdg), 0) AS pnl FROM trades WHERE agent_id = ? AND realized_pnl_usdg IS NOT NULL AND created_at > ?",
+            )
+            .get(agentId, sinceUnix)
+        : getDb()
+            .prepare(
+              "SELECT COALESCE(SUM(realized_pnl_usdg), 0) AS pnl FROM trades WHERE agent_id = ? AND realized_pnl_usdg IS NOT NULL",
+            )
+            .get(agentId)
+    ) as { pnl: number } | undefined;
+    return row?.pnl ?? 0;
+  } catch {
+    return 0;
+  }
 }
 
 // ── paper book — the zero-funds ledger (see paper.ts) ─────────────────────

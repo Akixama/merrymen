@@ -75,12 +75,15 @@ import { readPositionRaw } from "./telegram/reads";
 import { ensureSoul, getName } from "./soul";
 import { readPositions, type Position } from "./positions";
 import { readAccountBalances, readMarketSafety, setMainnetRpc } from "./snapshot";
+import { applyFill } from "./basis";
 import {
   addDecision,
   addEquity,
   addEvent,
   addFeeAccrual,
   addTrade,
+  getBasis,
+  setBasis,
   newDecisionId,
   ensureAgent,
   getAgentFinancials,
@@ -397,6 +400,31 @@ async function main() {
     await addDecision({ id, agent_id: active.agentId, source, symbol: d.symbol, action: d.action, size_usdg: d.sizeUsdg, reason });
   }
 
+  /**
+   * Book one stock fill against the running weighted-average cost basis and
+   * return the columns that describe it. This is what makes "did that trade make
+   * money" a number: a buy adds cost, a sell books realized P&L against the
+   * average and shrinks the basis pro-rata (see basis.ts for the exact identity).
+   */
+  function bookFill(
+    agentId: string,
+    f: { side: "buy" | "sell"; symbol: string; qtyRaw: bigint; cashUsdg: bigint; priceUsd: number },
+    source: "paper" | "quote",
+  ): Pick<TradeRow, "fill_side" | "fill_qty_raw" | "fill_price_usd" | "realized_pnl_usdg" | "basis_source"> {
+    const prev = getBasis(agentId, f.symbol);
+    const r = applyFill(prev, { side: f.side, qtyRaw: f.qtyRaw, cashUsdg: f.cashUsdg });
+    setBasis(agentId, f.symbol, r.basis);
+    return {
+      fill_side: f.side,
+      fill_qty_raw: f.qtyRaw.toString(),
+      fill_price_usd: f.priceUsd,
+      // Buys never book P&L; leave the column null so "realized" queries only
+      // ever sum genuine round-trip results.
+      realized_pnl_usdg: f.side === "sell" ? usdgNum(r.realizedUsdg) : undefined,
+      basis_source: source,
+    };
+  }
+
   async function processIntent(intent: TradeIntent, equityUsdg: bigint): Promise<void> {
     if (!active) return;
     const { agentId, limits, executor } = active;
@@ -471,6 +499,23 @@ async function main() {
       opsToday += 1;
       console.log(`[paper] ${fill.receipt}`);
       await addEvent(agentId, "ok", `📜 ${fill.receipt} — inside the wall, nothing signed`);
+      // Book the fill against the running cost basis. Paper fills are EXACT (we
+      // know the shares and the cash), so realized P&L here is the real thing.
+      const booked = fill.fill
+        ? bookFill(
+            agentId,
+            {
+              side: fill.fill.side,
+              symbol: fill.fill.symbol,
+              // Paper carries no ERC-8056 multiplier (1 share = 1e18 raw), the same
+              // convention the tick uses when it values the paper book.
+              qtyRaw: BigInt(Math.round(fill.fill.shares * 1e18)),
+              cashUsdg: usdg(fill.fill.cashUsdg),
+              priceUsd: fill.fill.priceUsd,
+            },
+            "paper",
+          )
+        : null;
       await recordTrade({
         agent_id: agentId,
         kind: intent.kind,
@@ -481,6 +526,7 @@ async function main() {
         status: "paper",
         sim_quote_out: fill.receipt,
         created_at: new Date().toISOString(),
+        ...(booked ?? {}),
       });
       return;
     }
@@ -496,6 +542,10 @@ async function main() {
     try {
       let txHash: `0x${string}`;
       let sim: Pick<TradeRow, "sim_quote_out" | "sim_min_out" | "sim_fee_tier" | "sim_gas"> = {};
+      // Fill economics for cost basis, taken from the pre-trade quote (we don't
+      // parse receipts yet) — recorded as basis_source 'quote' so analysis never
+      // mistakes an estimate for a settled figure.
+      let liveFill: { side: "buy" | "sell"; symbol: string; qtyRaw: bigint; cashUsdg: bigint; priceUsd: number } | null = null;
       // Same-token "swaps" (the selftest no-op) skip the quote path — they are
       // approval-leg pipeline probes, not trades.
       if (intent.kind === "swap" && cfg.swapVenue === "uniswap" && intent.sellToken !== intent.buyToken) {
@@ -529,6 +579,24 @@ async function main() {
           sim_fee_tier: quote.fee,
           sim_gas: quote.gasEstimate.toString(),
         };
+        // Which leg is the stock? USDG in = we're buying it; USDG out = selling.
+        {
+          const buyingStock = intent.sellToken.toLowerCase() === (CASH.USDG as string).toLowerCase();
+          const stockToken = buyingStock ? intent.buyToken : intent.sellToken;
+          const symbol = symbolOfToken(stockToken);
+          // Quantity is always the STOCK side (18dp); cash is always the USDG side (6dp).
+          const qtyRaw = buyingStock ? quote.amountOut : intent.sellAmountRaw;
+          const cashUsdg = buyingStock ? intent.sellAmountRaw : quote.amountOut;
+          if (symbol && qtyRaw > 0n) {
+            liveFill = {
+              side: buyingStock ? "buy" : "sell",
+              symbol,
+              qtyRaw,
+              cashUsdg,
+              priceUsd: Number(cashUsdg) / 1e6 / (Number(qtyRaw) / 1e18),
+            };
+          }
+        }
         // Approve exactly what's sold — USDG on buys, the stock token on sells.
         const approve = {
           to: intent.sellToken,
@@ -653,6 +721,8 @@ async function main() {
 
       console.log(`[execute] ${intent.kind} landed: ${txHash}`);
       await addEvent(agentId, "ok", `${intent.kind} landed (${fmt(notional)} USDG): ${txHash}`);
+      // Only a LANDED swap moves the basis — a revert must never book P&L.
+      const booked = liveFill ? bookFill(agentId, liveFill, "quote") : null;
       await recordTrade({
         agent_id: agentId,
         kind: intent.kind,
@@ -664,6 +734,7 @@ async function main() {
         status: "landed",
         created_at: new Date().toISOString(),
         ...sim,
+        ...(booked ?? {}),
       });
     } catch (e) {
       // Roll back the optimistic reservation — the money didn't move.

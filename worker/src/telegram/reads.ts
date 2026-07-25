@@ -117,10 +117,36 @@ export function readPnl(): string {
       .prepare("SELECT equity_usdg FROM equity ORDER BY at ASC, id ASC")
       .all() as { equity_usdg: number }[];
     const fee = db.prepare("SELECT COALESCE(SUM(fee_usdg),0) AS f FROM fee_accruals").get() as { f: number } | undefined;
-    if (eq.length < 2) return "📈 not enough history yet — check back after a few ticks.";
+    // Realized = closed round trips, booked against weighted-average cost. Split
+    // out from the equity swing so an open position's paper gain isn't mistaken
+    // for money actually taken off the table. Reported independently of equity
+    // history: a booked round trip is a fact, even on a young ledger.
+    let realized: { pnl: number; n: number } | undefined;
+    try {
+      realized = db
+        .prepare(
+          "SELECT COALESCE(SUM(realized_pnl_usdg),0) AS pnl, COUNT(*) AS n FROM trades WHERE realized_pnl_usdg IS NOT NULL",
+        )
+        .get() as { pnl: number; n: number } | undefined;
+    } catch {
+      /* pre-migration ledger — no realized column yet */
+    }
+    const realizedLine =
+      realized && realized.n > 0
+        ? `• realized: ${usd(realized.pnl)} over ${realized.n} closing trade${realized.n === 1 ? "" : "s"}`
+        : null;
+
+    if (eq.length < 2) {
+      return realizedLine
+        ? `📈 <b>P&amp;L</b>\n${realizedLine}\n• equity curve: not enough history yet — check back after a few ticks.`
+        : "📈 not enough history yet — check back after a few ticks.";
+    }
     const delta = eq[eq.length - 1]!.equity_usdg - eq[0]!.equity_usdg;
     const pct = eq[0]!.equity_usdg > 0 ? (delta / eq[0]!.equity_usdg) * 100 : 0;
-    return `📈 <b>P&amp;L</b>\n• change: ${usd(delta)} (${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%)\n• fees accrued: $${(fee?.f ?? 0).toFixed(2)}`;
+    const lines = [`📈 <b>P&amp;L</b>`, `• change: ${usd(delta)} (${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%)`];
+    if (realizedLine) lines.push(realizedLine);
+    lines.push(`• fees accrued: $${(fee?.f ?? 0).toFixed(2)}`);
+    return lines.join("\n");
   } catch {
     return "📈 no P&L yet.";
   } finally {

@@ -16,8 +16,10 @@ import path from "node:path";
 const HOME = mkdtempSync(path.join(os.tmpdir(), "merrymen-dec-"));
 process.env.MERRYMEN_HOME = HOME;
 
-const { initStore, addDecision, addTrade, newDecisionId } = await import("./store");
-const { readWhyEvidence } = await import("./telegram/reads");
+const { initStore, addDecision, addTrade, newDecisionId, getBasis, setBasis, getRealizedPnlUsdg } =
+  await import("./store");
+const { readWhyEvidence, readPnl } = await import("./telegram/reads");
+const { applyFill } = await import("./basis");
 
 const AGENT = "0x000000000000000000000000000000000000a9e7";
 
@@ -64,6 +66,53 @@ describe("decisions substrate — /why joins the trade to its own decision", () 
     assert.match(why.text, /via strategist/); // source label
     // The legacy "approx" time-window path must NOT be used for a linked trade.
     assert.doesNotMatch(why.text, /approx/);
+  });
+
+  it("a full round trip persists basis and books realized P&L to the ledger", async () => {
+    initStore();
+    const SHARE = 10n ** 18n;
+    const usdg6 = (v: number) => BigInt(Math.round(v * 1e6));
+    const SYM = "TSLA";
+
+    // BUY 2 shares for 200 USDG → basis persists, no realized P&L booked.
+    const buy = applyFill(getBasis(AGENT, SYM), { side: "buy", qtyRaw: 2n * SHARE, cashUsdg: usdg6(200) });
+    setBasis(AGENT, SYM, buy.basis);
+    await addTrade({
+      agent_id: AGENT, kind: "swap", target: "0x0000000000000000000000000000000000000002",
+      amount_usdg: 200, status: "paper", created_at: new Date().toISOString(),
+      fill_side: "buy", fill_qty_raw: (2n * SHARE).toString(), fill_price_usd: 100, basis_source: "paper",
+    });
+    const afterBuy = getBasis(AGENT, SYM);
+    assert.equal(afterBuy.qtyRaw, 2n * SHARE, "basis survives the round trip through sqlite");
+    assert.equal(afterBuy.costUsdg, usdg6(200));
+    assert.equal(getRealizedPnlUsdg(AGENT), 0, "a buy books no realized P&L");
+
+    // SELL 1 share for 150 USDG → +50 realized against the 100 average cost.
+    const sell = applyFill(afterBuy, { side: "sell", qtyRaw: SHARE, cashUsdg: usdg6(150) });
+    setBasis(AGENT, SYM, sell.basis);
+    assert.equal(sell.realizedUsdg, usdg6(50));
+    await addTrade({
+      agent_id: AGENT, kind: "swap", target: "0x0000000000000000000000000000000000000002",
+      amount_usdg: 150, status: "paper", created_at: new Date().toISOString(),
+      fill_side: "sell", fill_qty_raw: SHARE.toString(), fill_price_usd: 150,
+      realized_pnl_usdg: 50, basis_source: "paper",
+    });
+
+    const afterSell = getBasis(AGENT, SYM);
+    assert.equal(afterSell.qtyRaw, SHARE, "one share still held");
+    assert.equal(afterSell.costUsdg, usdg6(100), "its half of the cost stays on the books");
+    assert.equal(getRealizedPnlUsdg(AGENT), 50, "realized P&L is now queryable — previously impossible");
+
+    // And it surfaces to the owner rather than hiding in the schema.
+    assert.match(readPnl(), /realized/);
+
+    // Closing the rest zeroes the basis row entirely.
+    const close = applyFill(afterSell, { side: "sell", qtyRaw: SHARE, cashUsdg: usdg6(90) });
+    setBasis(AGENT, SYM, close.basis);
+    assert.equal(close.realizedUsdg, usdg6(-10), "a losing close books a negative figure");
+    const flat = getBasis(AGENT, SYM);
+    assert.equal(flat.qtyRaw, 0n);
+    assert.equal(flat.costUsdg, 0n);
   });
 
   it("a trade with no decision_id still explains itself (legacy fallback, no crash)", async () => {
