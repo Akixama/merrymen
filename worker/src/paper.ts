@@ -95,12 +95,22 @@ export function applyPaperIntent(
 
   // ── swap ──────────────────────────────────────────────────────────────
   if (intent.kind !== "swap") return { ok: false, reason: `unsupported paper intent ${intent.kind}`, book, positions };
-  const buyingStock = intent.sellToken.toLowerCase() === opts.usdgAddress.toLowerCase();
-  const stockToken = (buyingStock ? intent.buyToken : intent.sellToken) as `0x${string}`;
   // The selftest no-op (USDG→USDG) fills as a zero-move success.
   if (intent.sellToken.toLowerCase() === intent.buyToken.toLowerCase()) {
     return { ok: true, book: next, positions: pos, receipt: "paper: pipeline no-op" };
   }
+  const usdgAddr = opts.usdgAddress.toLowerCase();
+  const sellIsUsdg = intent.sellToken.toLowerCase() === usdgAddr;
+  const buyIsUsdg = intent.buyToken.toLowerCase() === usdgAddr;
+  // Only USDG-paired swaps are modelled: the cash leg is what debits/credits the
+  // book and carries the cost basis. A stock→stock swap has no cash leg, and the
+  // old code silently treated it as a SELL of the sell-token — banking cash and
+  // never buying the other side. Refuse it instead of inventing a fill.
+  if (sellIsUsdg === buyIsUsdg) {
+    return { ok: false, reason: "paper models USDG-paired swaps only (no cash leg here)", book, positions };
+  }
+  const buyingStock = sellIsUsdg;
+  const stockToken = (buyingStock ? intent.buyToken : intent.sellToken) as `0x${string}`;
   const px = opts.priceUsdOf(stockToken);
   const symbol = opts.symbolOf(stockToken);
   if (!px || !symbol || px.priceUsd <= 0) {

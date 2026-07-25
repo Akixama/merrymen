@@ -82,10 +82,12 @@ import {
   addEvent,
   addFeeAccrual,
   addTrade,
+  basisSymbols,
   getBasis,
   setBasis,
   newDecisionId,
   ensureAgent,
+  type BasisMode,
   getAgentFinancials,
   getOpsToday,
   getPaperBook,
@@ -408,19 +410,29 @@ async function main() {
    */
   function bookFill(
     agentId: string,
+    mode: BasisMode,
     f: { side: "buy" | "sell"; symbol: string; qtyRaw: bigint; cashUsdg: bigint; priceUsd: number },
     source: "paper" | "quote",
   ): Pick<TradeRow, "fill_side" | "fill_qty_raw" | "fill_price_usd" | "realized_pnl_usdg" | "basis_source"> {
-    const prev = getBasis(agentId, f.symbol);
+    const prev = getBasis(agentId, mode, f.symbol);
     const r = applyFill(prev, { side: f.side, qtyRaw: f.qtyRaw, cashUsdg: f.cashUsdg });
-    setBasis(agentId, f.symbol, r.basis);
+    setBasis(agentId, mode, f.symbol, r.basis);
+    if (r.basisUnknown) {
+      // A holding with no tracked cost (opened before basis existed, or drifted).
+      // Say so rather than reporting a number we can't stand behind.
+      void addEvent(
+        agentId,
+        "warn",
+        `sold ${f.symbol} with no cost basis on record — P&L for that trade isn't attributable (position predates basis tracking)`,
+      );
+    }
     return {
       fill_side: f.side,
       fill_qty_raw: f.qtyRaw.toString(),
       fill_price_usd: f.priceUsd,
-      // Buys never book P&L; leave the column null so "realized" queries only
-      // ever sum genuine round-trip results.
-      realized_pnl_usdg: f.side === "sell" ? usdgNum(r.realizedUsdg) : undefined,
+      // Left NULL for buys (nothing realized) AND for unbacked sells (cost
+      // unknown), so the realized sum only ever contains figures we can defend.
+      realized_pnl_usdg: f.side === "sell" && !r.basisUnknown ? usdgNum(r.realizedUsdg) : undefined,
       basis_source: source,
     };
   }
@@ -504,6 +516,7 @@ async function main() {
       const booked = fill.fill
         ? bookFill(
             agentId,
+            "paper",
             {
               side: fill.fill.side,
               symbol: fill.fill.symbol,
@@ -522,7 +535,7 @@ async function main() {
       // it, the basis is flat too — otherwise stale dust would silently become
       // the cost of the NEXT position in that symbol.
       if (fill.fill && !fill.positions.some((p) => p.symbol === fill.fill!.symbol)) {
-        setBasis(agentId, fill.fill.symbol, { qtyRaw: 0n, costUsdg: 0n });
+        setBasis(agentId, "paper", fill.fill.symbol, { qtyRaw: 0n, costUsdg: 0n });
       }
       await recordTrade({
         agent_id: agentId,
@@ -588,21 +601,33 @@ async function main() {
           sim_gas: quote.gasEstimate.toString(),
         };
         // Which leg is the stock? USDG in = we're buying it; USDG out = selling.
+        // The accounting assumes EXACTLY ONE leg is 6dp USDG cash; a stock→stock
+        // swap has none, and feeding an 18dp token amount into the cash field
+        // would be a 10^12 error. Book nothing rather than book nonsense.
         {
-          const buyingStock = intent.sellToken.toLowerCase() === (CASH.USDG as string).toLowerCase();
-          const stockToken = buyingStock ? intent.buyToken : intent.sellToken;
-          const symbol = symbolOfToken(stockToken);
-          // Quantity is always the STOCK side (18dp); cash is always the USDG side (6dp).
-          const qtyRaw = buyingStock ? quote.amountOut : intent.sellAmountRaw;
-          const cashUsdg = buyingStock ? intent.sellAmountRaw : quote.amountOut;
-          if (symbol && qtyRaw > 0n) {
-            liveFill = {
-              side: buyingStock ? "buy" : "sell",
-              symbol,
-              qtyRaw,
-              cashUsdg,
-              priceUsd: Number(cashUsdg) / 1e6 / (Number(qtyRaw) / 1e18),
-            };
+          const usdgAddr = (CASH.USDG as string).toLowerCase();
+          const sellIsUsdg = intent.sellToken.toLowerCase() === usdgAddr;
+          const buyIsUsdg = intent.buyToken.toLowerCase() === usdgAddr;
+          if (sellIsUsdg !== buyIsUsdg) {
+            const stockToken = sellIsUsdg ? intent.buyToken : intent.sellToken;
+            const symbol = symbolOfToken(stockToken);
+            // Quantity is always the STOCK side (18dp); cash always the USDG side (6dp).
+            // The RECEIVED side uses minOut, not the quote: the fill can come in
+            // worse than quoted but never better, so this is the conservative
+            // figure. Erring optimistic here would understate every loss.
+            const qtyRaw = sellIsUsdg ? minOut : intent.sellAmountRaw;
+            const cashUsdg = sellIsUsdg ? intent.sellAmountRaw : minOut;
+            if (symbol && qtyRaw > 0n) {
+              liveFill = {
+                side: sellIsUsdg ? "buy" : "sell",
+                symbol,
+                qtyRaw,
+                cashUsdg,
+                priceUsd: Number(cashUsdg) / 1e6 / (Number(qtyRaw) / 1e18),
+              };
+            }
+          } else {
+            await addEvent(agentId, "warn", `swap has no USDG leg — cost basis not booked for this fill`);
           }
         }
         // Approve exactly what's sold — USDG on buys, the stock token on sells.
@@ -730,7 +755,7 @@ async function main() {
       console.log(`[execute] ${intent.kind} landed: ${txHash}`);
       await addEvent(agentId, "ok", `${intent.kind} landed (${fmt(notional)} USDG): ${txHash}`);
       // Only a LANDED swap moves the basis — a revert must never book P&L.
-      const booked = liveFill ? bookFill(agentId, liveFill, "quote") : null;
+      const booked = liveFill ? bookFill(agentId, "live", liveFill, "quote") : null;
       await recordTrade({
         agent_id: agentId,
         kind: intent.kind,
@@ -872,6 +897,23 @@ async function main() {
     // Equity is the whole book — cash, vault, and multiplier-aware stock value —
     // so the drawdown breaker judges reality, not just the cash ledger.
     const equityUsdg = balances.cashUsdg + balances.vaultUsdg + positionsUsdg;
+
+    // Reconcile LIVE cost basis against the chain. Live fills are booked from the
+    // pre-trade quote (we don't parse receipts yet), so the tracked quantity can
+    // drift from what actually settled — and a drifted remainder would otherwise
+    // sit forever as a phantom position whose cost never comes out. The chain is
+    // the truth: a symbol we no longer hold has no basis, full stop.
+    if (!paper) {
+      const heldNow = new Set(positions.map((p) => p.symbol));
+      for (const symbol of basisSymbols(agentId, "live")) {
+        if (heldNow.has(symbol)) continue;
+        const stranded = getBasis(agentId, "live", symbol);
+        if (stranded.qtyRaw <= 0n) continue;
+        setBasis(agentId, "live", symbol, { qtyRaw: 0n, costUsdg: 0n });
+        console.log(`[basis] ${symbol} no longer held on-chain — closing stranded basis (${fmt(stranded.costUsdg)} USDG cost)`);
+        await addEvent(agentId, "warn", `closed leftover ${symbol} cost basis (${fmt(stranded.costUsdg)} USDG) — position is flat on-chain`);
+      }
+    }
 
     // Merry Circle — refresh the holder's tier ($MERRYMEN on mainnet, read-only)
     // and note tier changes. The tier discounts the performance fee below.

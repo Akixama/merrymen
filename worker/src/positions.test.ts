@@ -72,7 +72,7 @@ describe("readPositions — a held holding is never silently valued at zero", ()
     const prices = new Map([["AAPL", { price8: usd(200), stale: false }]]);
     const r = await readPositions(client([good(5n * ONE), good(ONE)]), ACCT, [AAPL], prices);
     assert.equal(r.positions.length, 1);
-    assert.equal(r.positions[0].symbol, "AAPL");
+    assert.equal(r.positions[0]?.symbol, "AAPL");
     assert.deepEqual(r.missingPrice, []);
   });
 
@@ -107,7 +107,7 @@ describe("readPositions — a held holding is never silently valued at zero", ()
     const prices = new Map([["AAPL", { price8: usd(200), stale: true }]]);
     const r = await readPositions(client([good(5n * ONE), good(ONE)]), ACCT, [AAPL], prices);
     assert.equal(r.positions.length, 1);
-    assert.equal(r.positions[0].priceStale, true);
+    assert.equal(r.positions[0]?.priceStale, true);
     assert.deepEqual(r.missingPrice, []);
   });
 

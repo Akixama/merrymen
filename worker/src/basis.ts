@@ -45,12 +45,23 @@ export interface Fill {
 
 export interface FillResult {
   basis: BasisRow;
-  /** 6dp USDG booked on this fill. Always 0n for a buy. */
+  /** 6dp USDG booked on this fill. Always 0n for a buy, and 0n whenever
+   * basisUnknown is set — see below. */
   realizedUsdg: bigint;
   /** 6dp USDG of basis removed by a sell (what those units originally cost). */
   costOutUsdg: bigint;
   /** Raw units actually applied — a sell is capped at the held quantity. */
   appliedQtyRaw: bigint;
+  /**
+   * True when some or all of the sold quantity had NO cost on the books — a
+   * position opened before basis tracking existed, transferred in, or a basis row
+   * that drifted short of the real balance.
+   *
+   * UNKNOWN COST IS NOT ZERO COST. Treating it as zero would report the entire
+   * proceeds as profit — inverting the sign on a losing trade — so the caller
+   * must record NO realized figure for this fill rather than a flattering one.
+   */
+  basisUnknown: boolean;
 }
 
 export const ZERO_BASIS: BasisRow = { qtyRaw: 0n, costUsdg: 0n };
@@ -62,7 +73,7 @@ export const ZERO_BASIS: BasisRow = { qtyRaw: 0n, costUsdg: 0n };
  */
 export function applyFill(prev: BasisRow, fill: Fill): FillResult {
   if (fill.qtyRaw <= 0n) {
-    return { basis: prev, realizedUsdg: 0n, costOutUsdg: 0n, appliedQtyRaw: 0n };
+    return { basis: prev, realizedUsdg: 0n, costOutUsdg: 0n, appliedQtyRaw: 0n, basisUnknown: false };
   }
 
   if (fill.side === "buy") {
@@ -71,24 +82,30 @@ export function applyFill(prev: BasisRow, fill: Fill): FillResult {
       realizedUsdg: 0n,
       costOutUsdg: 0n,
       appliedQtyRaw: fill.qtyRaw,
+      basisUnknown: false,
     };
   }
 
   // ── sell ────────────────────────────────────────────────────────────────
   if (prev.qtyRaw <= 0n) {
-    // Nothing on the books (pre-basis holding, or an external transfer in).
-    // Book the whole proceeds as realized rather than inventing a negative cost.
-    return { basis: ZERO_BASIS, realizedUsdg: fill.cashUsdg, costOutUsdg: 0n, appliedQtyRaw: 0n };
+    // Nothing on the books: a holding that predates basis tracking, or one that
+    // arrived by transfer. Its cost is UNKNOWN, not zero — booking the proceeds
+    // as pure profit would report a loss as a gain. Report nothing instead.
+    return { basis: ZERO_BASIS, realizedUsdg: 0n, costOutUsdg: 0n, appliedQtyRaw: 0n, basisUnknown: true };
   }
   const sold = fill.qtyRaw < prev.qtyRaw ? fill.qtyRaw : prev.qtyRaw;
   // Selling the whole position takes the whole remaining cost — no truncation
   // residue left stranded on a zero quantity.
   const costOut = sold === prev.qtyRaw ? prev.costUsdg : (prev.costUsdg * sold) / prev.qtyRaw;
+  // A sell larger than the tracked basis is partly unbacked: the excess has no
+  // cost we can attribute, so the fill's P&L as a whole isn't knowable.
+  const partlyUnbacked = sold < fill.qtyRaw;
   return {
     basis: { qtyRaw: prev.qtyRaw - sold, costUsdg: prev.costUsdg - costOut },
-    realizedUsdg: fill.cashUsdg - costOut,
+    realizedUsdg: partlyUnbacked ? 0n : fill.cashUsdg - costOut,
     costOutUsdg: costOut,
     appliedQtyRaw: sold,
+    basisUnknown: partlyUnbacked,
   };
 }
 

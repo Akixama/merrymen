@@ -75,21 +75,21 @@ describe("decisions substrate — /why joins the trade to its own decision", () 
     const SYM = "TSLA";
 
     // BUY 2 shares for 200 USDG → basis persists, no realized P&L booked.
-    const buy = applyFill(getBasis(AGENT, SYM), { side: "buy", qtyRaw: 2n * SHARE, cashUsdg: usdg6(200) });
-    setBasis(AGENT, SYM, buy.basis);
+    const buy = applyFill(getBasis(AGENT, "paper", SYM), { side: "buy", qtyRaw: 2n * SHARE, cashUsdg: usdg6(200) });
+    setBasis(AGENT, "paper", SYM, buy.basis);
     await addTrade({
       agent_id: AGENT, kind: "swap", target: "0x0000000000000000000000000000000000000002",
       amount_usdg: 200, status: "paper", created_at: new Date().toISOString(),
       fill_side: "buy", fill_qty_raw: (2n * SHARE).toString(), fill_price_usd: 100, basis_source: "paper",
     });
-    const afterBuy = getBasis(AGENT, SYM);
+    const afterBuy = getBasis(AGENT, "paper", SYM);
     assert.equal(afterBuy.qtyRaw, 2n * SHARE, "basis survives the round trip through sqlite");
     assert.equal(afterBuy.costUsdg, usdg6(200));
-    assert.equal(getRealizedPnlUsdg(AGENT), 0, "a buy books no realized P&L");
+    assert.equal(getRealizedPnlUsdg(AGENT, "paper"), 0, "a buy books no realized P&L");
 
     // SELL 1 share for 150 USDG → +50 realized against the 100 average cost.
     const sell = applyFill(afterBuy, { side: "sell", qtyRaw: SHARE, cashUsdg: usdg6(150) });
-    setBasis(AGENT, SYM, sell.basis);
+    setBasis(AGENT, "paper", SYM, sell.basis);
     assert.equal(sell.realizedUsdg, usdg6(50));
     await addTrade({
       agent_id: AGENT, kind: "swap", target: "0x0000000000000000000000000000000000000002",
@@ -98,21 +98,77 @@ describe("decisions substrate — /why joins the trade to its own decision", () 
       realized_pnl_usdg: 50, basis_source: "paper",
     });
 
-    const afterSell = getBasis(AGENT, SYM);
+    const afterSell = getBasis(AGENT, "paper", SYM);
     assert.equal(afterSell.qtyRaw, SHARE, "one share still held");
     assert.equal(afterSell.costUsdg, usdg6(100), "its half of the cost stays on the books");
-    assert.equal(getRealizedPnlUsdg(AGENT), 50, "realized P&L is now queryable — previously impossible");
+    assert.equal(getRealizedPnlUsdg(AGENT, "paper"), 50, "realized P&L is now queryable — previously impossible");
 
     // And it surfaces to the owner rather than hiding in the schema.
     assert.match(readPnl(), /realized/);
 
     // Closing the rest zeroes the basis row entirely.
     const close = applyFill(afterSell, { side: "sell", qtyRaw: SHARE, cashUsdg: usdg6(90) });
-    setBasis(AGENT, SYM, close.basis);
+    setBasis(AGENT, "paper", SYM, close.basis);
     assert.equal(close.realizedUsdg, usdg6(-10), "a losing close books a negative figure");
-    const flat = getBasis(AGENT, SYM);
+    const flat = getBasis(AGENT, "paper", SYM);
     assert.equal(flat.qtyRaw, 0n);
     assert.equal(flat.costUsdg, 0n);
+  });
+
+  // Paper and live are different money against different assets. Sharing a basis
+  // row would let a simulated fill price a real sell — or delete a real position's
+  // cost outright (the paper dust reconciliation would have done exactly that).
+  it("paper and live basis are separate books that cannot touch each other", async () => {
+    initStore();
+    const SHARE = 10n ** 18n;
+    const SYM = "NVDA";
+
+    setBasis(AGENT, "live", SYM, { qtyRaw: 4n * SHARE, costUsdg: 400_000_000n });
+    setBasis(AGENT, "paper", SYM, { qtyRaw: 1n * SHARE, costUsdg: 50_000_000n });
+
+    assert.equal(getBasis(AGENT, "live", SYM).costUsdg, 400_000_000n, "live book untouched by the paper write");
+    assert.equal(getBasis(AGENT, "paper", SYM).costUsdg, 50_000_000n);
+
+    // Closing the PAPER position (what the dust reconciliation does) must leave
+    // the live position's cost completely intact.
+    setBasis(AGENT, "paper", SYM, { qtyRaw: 0n, costUsdg: 0n });
+    assert.equal(getBasis(AGENT, "paper", SYM).qtyRaw, 0n, "paper closed");
+    assert.equal(getBasis(AGENT, "live", SYM).qtyRaw, 4n * SHARE, "real position survives — was previously deleted");
+    assert.equal(getBasis(AGENT, "live", SYM).costUsdg, 400_000_000n);
+  });
+
+  it("realized P&L never mixes paper money with live money", async () => {
+    initStore();
+    const A = "0x000000000000000000000000000000000000bbbb";
+    await addTrade({
+      agent_id: A, kind: "swap", target: "0x0000000000000000000000000000000000000003",
+      amount_usdg: 100, status: "paper", created_at: new Date().toISOString(),
+      fill_side: "sell", realized_pnl_usdg: 25, basis_source: "paper",
+    });
+    await addTrade({
+      agent_id: A, kind: "swap", target: "0x0000000000000000000000000000000000000003",
+      amount_usdg: 100, status: "landed", created_at: new Date().toISOString(),
+      fill_side: "sell", realized_pnl_usdg: -7, basis_source: "quote",
+    });
+    assert.equal(getRealizedPnlUsdg(A, "paper"), 25, "paper book stands alone");
+    assert.equal(getRealizedPnlUsdg(A, "live"), -7, "live book stands alone");
+  });
+
+  it("a sell with no basis records NO realized figure — it is excluded, not counted as profit", async () => {
+    initStore();
+    const A = "0x000000000000000000000000000000000000cccc";
+    const SHARE = 10n ** 18n;
+    // The upgrade case: a real position exists, no basis row was ever written.
+    const r = applyFill(getBasis(A, "paper", "QQQ"), { side: "sell", qtyRaw: SHARE, cashUsdg: 888_410_000n });
+    assert.equal(r.basisUnknown, true);
+    await addTrade({
+      agent_id: A, kind: "swap", target: "0x0000000000000000000000000000000000000004",
+      amount_usdg: 888.41, status: "paper", created_at: new Date().toISOString(),
+      fill_side: "sell", basis_source: "paper",
+      // bookFill leaves this undefined when basisUnknown — the whole point.
+      realized_pnl_usdg: r.basisUnknown ? undefined : 888.41,
+    });
+    assert.equal(getRealizedPnlUsdg(A, "paper"), 0, "an unknown-cost sale contributes nothing, rather than +$888");
   });
 
   it("a trade with no decision_id still explains itself (legacy fallback, no crash)", async () => {

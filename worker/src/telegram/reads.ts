@@ -121,20 +121,28 @@ export function readPnl(): string {
     // out from the equity swing so an open position's paper gain isn't mistaken
     // for money actually taken off the table. Reported independently of equity
     // history: a booked round trip is a fact, even on a young ledger.
-    let realized: { pnl: number; n: number } | undefined;
+    // Paper and live are different money and are NEVER summed together. Rows
+    // whose basis was unknown carry NULL and are excluded, so this figure only
+    // contains P&L we can actually defend.
+    let realizedLine: string | null = null;
     try {
-      realized = db
+      const rows = db
         .prepare(
-          "SELECT COALESCE(SUM(realized_pnl_usdg),0) AS pnl, COUNT(*) AS n FROM trades WHERE realized_pnl_usdg IS NOT NULL",
+          `SELECT status, COALESCE(SUM(realized_pnl_usdg),0) AS pnl, COUNT(*) AS n
+             FROM trades WHERE realized_pnl_usdg IS NOT NULL AND status IN ('paper','landed')
+            GROUP BY status`,
         )
-        .get() as { pnl: number; n: number } | undefined;
+        .all() as { status: string; pnl: number; n: number }[];
+      const parts = rows
+        .filter((r) => r.n > 0)
+        .map(
+          (r) =>
+            `• realized${r.status === "paper" ? " (📜 paper)" : ""}: ${usd(r.pnl)} over ${r.n} closing trade${r.n === 1 ? "" : "s"}`,
+        );
+      if (parts.length) realizedLine = parts.join("\n");
     } catch {
       /* pre-migration ledger — no realized column yet */
     }
-    const realizedLine =
-      realized && realized.n > 0
-        ? `• realized: ${usd(realized.pnl)} over ${realized.n} closing trade${realized.n === 1 ? "" : "s"}`
-        : null;
 
     if (eq.length < 2) {
       return realizedLine

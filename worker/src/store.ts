@@ -118,13 +118,19 @@ function getDb(): DatabaseSync {
     -- 18dp RAW units and cost is 6dp USDG, both as decimal strings because
     -- sqlite has no bigint — parsed straight back to BigInt on read.
     -- Basis lives per RAW unit, so ERC-8056 splits never disturb it.
+    --
+    -- PARTITIONED BY MODE. Paper and live are two different books of two
+    -- different assets (simulated shares vs real tokens); sharing a row would let
+    -- a simulated fill price a real sell, or delete a real position's cost.
+    -- Mirrors how paper_book is already separate from on-chain balances.
     CREATE TABLE IF NOT EXISTS cost_basis (
       agent_id TEXT NOT NULL,
+      mode TEXT NOT NULL,
       symbol TEXT NOT NULL,
       qty_raw TEXT NOT NULL,
       cost_usdg TEXT NOT NULL,
       updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
-      PRIMARY KEY (agent_id, symbol)
+      PRIMARY KEY (agent_id, mode, symbol)
     );
   `);
   for (const ddl of [
@@ -479,12 +485,15 @@ export async function getSpentTodayUsdg(agentId: string): Promise<number> {
 
 // ── cost basis — weighted-average, per symbol (see basis.ts) ──────────────
 
-/** Load a symbol's basis. Missing row = a flat position, not an error. */
-export function getBasis(agentId: string, symbol: string): { qtyRaw: bigint; costUsdg: bigint } {
+/** Paper and live keep separate books — see the cost_basis DDL. */
+export type BasisMode = "paper" | "live";
+
+/** Load a symbol's basis for one mode. Missing row = a flat position, not an error. */
+export function getBasis(agentId: string, mode: BasisMode, symbol: string): { qtyRaw: bigint; costUsdg: bigint } {
   try {
     const row = getDb()
-      .prepare("SELECT qty_raw, cost_usdg FROM cost_basis WHERE agent_id = ? AND symbol = ?")
-      .get(agentId, symbol) as { qty_raw: string; cost_usdg: string } | undefined;
+      .prepare("SELECT qty_raw, cost_usdg FROM cost_basis WHERE agent_id = ? AND mode = ? AND symbol = ?")
+      .get(agentId, mode, symbol) as { qty_raw: string; cost_usdg: string } | undefined;
     if (!row) return { qtyRaw: 0n, costUsdg: 0n };
     return { qtyRaw: BigInt(row.qty_raw), costUsdg: BigInt(row.cost_usdg) };
   } catch {
@@ -493,39 +502,61 @@ export function getBasis(agentId: string, symbol: string): { qtyRaw: bigint; cos
 }
 
 /** Persist a symbol's basis; a fully-closed position drops the row entirely. */
-export function setBasis(agentId: string, symbol: string, b: { qtyRaw: bigint; costUsdg: bigint }): void {
+export function setBasis(
+  agentId: string,
+  mode: BasisMode,
+  symbol: string,
+  b: { qtyRaw: bigint; costUsdg: bigint },
+): void {
   try {
     const db = getDb();
     if (b.qtyRaw <= 0n) {
-      db.prepare("DELETE FROM cost_basis WHERE agent_id = ? AND symbol = ?").run(agentId, symbol);
+      db.prepare("DELETE FROM cost_basis WHERE agent_id = ? AND mode = ? AND symbol = ?").run(agentId, mode, symbol);
       return;
     }
     db.prepare(
-      `INSERT INTO cost_basis (agent_id, symbol, qty_raw, cost_usdg, updated_at)
-       VALUES (?, ?, ?, ?, unixepoch())
-       ON CONFLICT(agent_id, symbol) DO UPDATE SET
+      `INSERT INTO cost_basis (agent_id, mode, symbol, qty_raw, cost_usdg, updated_at)
+       VALUES (?, ?, ?, ?, ?, unixepoch())
+       ON CONFLICT(agent_id, mode, symbol) DO UPDATE SET
          qty_raw = excluded.qty_raw, cost_usdg = excluded.cost_usdg, updated_at = excluded.updated_at`,
-    ).run(agentId, symbol, b.qtyRaw.toString(), b.costUsdg.toString());
+    ).run(agentId, mode, symbol, b.qtyRaw.toString(), b.costUsdg.toString());
   } catch (e) {
     console.error("[store] basis update failed:", e);
   }
 }
 
-/** Realized P&L booked across closed (or partly closed) round trips. */
-export function getRealizedPnlUsdg(agentId: string, sinceUnix?: number): number {
+/** Every symbol carrying basis in one mode — used to reconcile against reality. */
+export function basisSymbols(agentId: string, mode: BasisMode): string[] {
+  try {
+    const rows = getDb()
+      .prepare("SELECT symbol FROM cost_basis WHERE agent_id = ? AND mode = ?")
+      .all(agentId, mode) as { symbol: string }[];
+    return rows.map((r) => r.symbol);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Realized P&L over closed round trips, for ONE agent and ONE book. Paper and
+ * live money must never be summed together, and rows whose basis was unknown
+ * carry NULL so they're excluded rather than counted as cost-free profit.
+ */
+export function getRealizedPnlUsdg(agentId: string, mode: BasisMode, sinceUnix?: number): number {
+  const status = mode === "paper" ? "paper" : "landed";
   try {
     const row = (
       sinceUnix
         ? getDb()
             .prepare(
-              "SELECT COALESCE(SUM(realized_pnl_usdg), 0) AS pnl FROM trades WHERE agent_id = ? AND realized_pnl_usdg IS NOT NULL AND created_at > ?",
+              "SELECT COALESCE(SUM(realized_pnl_usdg), 0) AS pnl FROM trades WHERE agent_id = ? AND status = ? AND realized_pnl_usdg IS NOT NULL AND created_at > ?",
             )
-            .get(agentId, sinceUnix)
+            .get(agentId, status, sinceUnix)
         : getDb()
             .prepare(
-              "SELECT COALESCE(SUM(realized_pnl_usdg), 0) AS pnl FROM trades WHERE agent_id = ? AND realized_pnl_usdg IS NOT NULL",
+              "SELECT COALESCE(SUM(realized_pnl_usdg), 0) AS pnl FROM trades WHERE agent_id = ? AND status = ? AND realized_pnl_usdg IS NOT NULL",
             )
-            .get(agentId)
+            .get(agentId, status)
     ) as { pnl: number } | undefined;
     return row?.pnl ?? 0;
   } catch {

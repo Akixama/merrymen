@@ -60,13 +60,27 @@ describe("applyFill — weighted-average cost basis", () => {
     assert.equal(r.appliedQtyRaw, SHARE, "only what was held is applied");
     assert.equal(r.basis.qtyRaw, 0n);
     assert.equal(r.basis.costUsdg, 0n);
+    assert.equal(r.basisUnknown, true, "the unbacked excess makes the fill's P&L unknowable");
+    assert.equal(r.realizedUsdg, 0n, "no flattering figure from cost-free quantity");
   });
 
-  it("selling with no basis on the books credits the proceeds, never a negative cost", () => {
+  // UNKNOWN COST IS NOT ZERO COST. Getting this wrong reports a loss as a gain,
+  // at the magnitude of the entire original cost — and it fires on the first
+  // sell of any position opened before basis tracking existed.
+  it("selling with NO basis books no realized figure — it does not credit the proceeds as profit", () => {
     const r = applyFill(ZERO_BASIS, { side: "sell", qtyRaw: SHARE, cashUsdg: usdg(75) });
-    assert.equal(r.realizedUsdg, usdg(75));
+    assert.equal(r.basisUnknown, true);
+    assert.equal(r.realizedUsdg, 0n, "unknown cost must never become pure profit");
     assert.equal(r.costOutUsdg, 0n);
     assert.equal(r.basis.qtyRaw, 0n);
+  });
+
+  it("the pre-migration loss case: a $1000 lot sold for $888 is NOT reported as +$888", () => {
+    // The exact scenario on an upgraded install: real position, no basis row.
+    const r = applyFill(ZERO_BASIS, { side: "sell", qtyRaw: 1_380_590_000_000_000_000n, cashUsdg: usdg(888.41) });
+    assert.equal(r.basisUnknown, true);
+    assert.notEqual(r.realizedUsdg, usdg(888.41), "the old behaviour inverted the sign on a real loss");
+    assert.equal(r.realizedUsdg, 0n);
   });
 
   it("a zero-quantity fill is a no-op", () => {
@@ -103,13 +117,22 @@ describe("unrealized + avg cost", () => {
 });
 
 /**
- * THE INVARIANT. For any sequence of fills that starts from a clean basis:
+ * THE CONSERVATION INVARIANT. For any FULLY-BACKED sequence (every sell covered
+ * by tracked basis) starting from a clean book:
  *
  *   Σ realized + unrealized(finalBasis, marketValue) == Σ proceeds + marketValue − Σ spent
  *
- * i.e. the accounting P&L equals the economic P&L. This holds EXACTLY (not
- * within a tolerance) because the pro-rata cost split is truncated once and the
- * same truncated figure is both booked to realized and removed from the basis.
+ * i.e. accounting P&L equals economic P&L. It holds EXACTLY, not within a
+ * tolerance, because the pro-rata cost split is truncated once and the same
+ * truncated figure is both booked to realized and removed from the basis.
+ *
+ * What this does and does NOT prove: it proves no value leaks or is invented
+ * across a sequence. It cannot by itself catch a mis-split BETWEEN realized and
+ * unrealized (both sides move together) — the hand-computed weighted-average
+ * cases above are what pin the split itself. Both are needed.
+ *
+ * The precondition is enforced below: an unbacked sell books no realized figure
+ * (cost unknown), so such a sequence is deliberately outside this identity.
  */
 describe("accounting P&L == economic P&L, exactly", () => {
   const runSequence = (fills: Fill[], marketValueUsdg: bigint) => {
@@ -119,6 +142,7 @@ describe("accounting P&L == economic P&L, exactly", () => {
     let proceeds = 0n;
     for (const f of fills) {
       const r = applyFill(basis, f);
+      assert.equal(r.basisUnknown, false, "invariant sequences must be fully backed");
       basis = r.basis;
       realized += r.realizedUsdg;
       if (f.side === "buy") spent += f.cashUsdg;
