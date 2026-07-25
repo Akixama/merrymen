@@ -27,6 +27,15 @@ export interface AgentLimits {
 }
 
 export type TradeIntent = {
+  /**
+   * Opaque link to the `decisions` row that produced this intent — set upstream
+   * (strategist / chat / tick fallback), stamped onto the trade for attribution.
+   * checkPolicy MUST ignore it: this stays a numbers-only decision. It is NOT the
+   * model's reason (that free text lives only in the decisions table, never here),
+   * so the policy-purity rule above is preserved.
+   */
+  decisionId?: string;
+} & ({
   kind: "swap";
   target: `0x${string}`;
   sellToken: `0x${string}`;
@@ -50,7 +59,7 @@ export type TradeIntent = {
   target: `0x${string}`;
   recipient: `0x${string}`;
   amountUsdg: bigint;
-};
+});
 
 export type Verdict =
   | { ok: true }

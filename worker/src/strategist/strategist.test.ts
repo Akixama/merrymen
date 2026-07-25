@@ -82,6 +82,21 @@ describe("proposalsToIntents — deterministic code disposes", () => {
     assert.equal(i.kind === "swap" && i.notionalUsdg, 25_000_000n);
   });
 
+  it("returns `accepted` parallel to intents — accepted[i] is the action behind intents[i]", () => {
+    const { intents, accepted } = proposalsToIntents(
+      [
+        { action: "buy", symbol: "AAPL", sizeUsdg: 25, reason: "dip" },
+        { action: "buy", symbol: "GME", sizeUsdg: 10, reason: "dropped — not in universe" },
+        { action: "buy", symbol: "MSFT", sizeUsdg: 15, reason: "trend" },
+      ],
+      universe(),
+      snap(),
+    );
+    assert.equal(intents.length, accepted.length);
+    assert.deepEqual(accepted.map((a) => a.symbol), ["AAPL", "MSFT"]); // GME dropped, not in accepted
+    assert.deepEqual(accepted.map((a) => a.reason), ["dip", "trend"]);
+  });
+
   it("rejects symbols outside the universe — the model cannot add assets", () => {
     const { intents, rejected } = proposalsToIntents(
       [{ action: "buy", symbol: "GME", sizeUsdg: 10, reason: "moon" }],
@@ -242,6 +257,53 @@ describe("makeLlmStrategist — decision windows, not per-tick chatter", () => {
     assert.equal(intents.length, 1);
     assert.equal(intents[0]!.kind === "swap" && intents[0]!.buyToken, AAPL);
     assert.ok(notes.some((n) => /DOGE/.test(n) && /not in the tradable universe/.test(n)));
+  });
+
+  it("journals a decision per survivor + per drop, and stamps the survivor's intent", async () => {
+    const driver = mockDriver({
+      actions: [
+        { action: "buy", symbol: "AAPL", sizeUsdg: 20, reason: "weekend gap setup" },
+        { action: "buy", symbol: "DOGE", sizeUsdg: 20, reason: "vibes" }, // not in universe → drop
+      ],
+    });
+    const decisions: import("./strategy").StrategistDecision[] = [];
+    const s = makeLlmStrategist({
+      driver,
+      universe: universe(),
+      decisionIntervalMs: 0,
+      now: (() => { let t = 0; return () => (t += 1); })(),
+      provider: "groq",
+      model: "llama-3.3-70b",
+      onDecision: (d) => { decisions.push(d); },
+    });
+    const intents = await s.tick(snap());
+
+    const survivors = decisions.filter((d) => !d.dropped_rule);
+    const drops = decisions.filter((d) => d.dropped_rule);
+    assert.equal(survivors.length, 1, "one survivor decision");
+    assert.equal(drops.length, 1, "one drop decision");
+
+    // The survivor carries the model's own reason + labels, and its id is stamped
+    // onto the intent that goes to the wall — that's the join key for /why.
+    const sv = survivors[0]!;
+    assert.equal(sv.symbol, "AAPL");
+    assert.equal(sv.action, "buy");
+    assert.equal(sv.size_usdg, 20);
+    assert.equal(sv.reason, "weekend gap setup");
+    assert.equal(sv.provider, "groq");
+    assert.equal(sv.model, "llama-3.3-70b");
+    assert.ok(sv.signals_json && sv.signals_json.includes("AAPL"), "signals captured");
+    assert.equal(intents.length, 1);
+    assert.equal(intents[0]!.decisionId, sv.id, "intent links to its decision");
+    assert.match(drops[0]!.dropped_rule!, /DOGE/);
+  });
+
+  it("without an onDecision sink, no ids are minted (backtest path stays pure)", async () => {
+    const driver = mockDriver({ actions: [{ action: "buy", symbol: "AAPL", sizeUsdg: 20, reason: "x" }] });
+    const s = makeLlmStrategist({ driver, universe: universe(), decisionIntervalMs: 0, now: (() => { let t = 0; return () => (t += 1); })() });
+    const intents = await s.tick(snap());
+    assert.equal(intents.length, 1);
+    assert.equal(intents[0]!.decisionId, undefined);
   });
 
   it("emits nothing when the sequencer is down — no model call either", async () => {

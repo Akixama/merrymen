@@ -318,10 +318,10 @@ export function readWhyEvidence(): { text: string; hasTrade: boolean } {
   try {
     const t = db
       .prepare(
-        "SELECT kind, amount_usdg, status, reject_rule, tx_hash, created_at FROM trades ORDER BY id DESC LIMIT 1",
+        "SELECT kind, amount_usdg, status, reject_rule, tx_hash, created_at, decision_id FROM trades ORDER BY id DESC LIMIT 1",
       )
       .get() as
-      | { kind: string; amount_usdg: number; status: string; reject_rule: string | null; tx_hash: string | null; created_at: string | number }
+      | { kind: string; amount_usdg: number; status: string; reject_rule: string | null; tx_hash: string | null; created_at: string | number; decision_id: string | null }
       | undefined;
     if (!t) return { text: "🧾 I haven't made a trade yet — nothing to explain.", hasTrade: false };
     const lines = [
@@ -329,21 +329,38 @@ export function readWhyEvidence(): { text: string; hasTrade: boolean } {
       `• ${esc(t.kind)} ${t.amount_usdg.toFixed(2)} USDG — ${esc(t.status)}${t.reject_rule ? ` (${esc(t.reject_rule)})` : ""}`,
     ];
     if (t.tx_hash) lines.push(`• tx: <code>${esc(t.tx_hash)}</code>`);
-    // Strategist notes around the trade time (±15 min) — the recorded reasoning.
-    try {
-      const tradeUnix =
-        typeof t.created_at === "number" ? t.created_at : Math.floor(new Date(t.created_at).getTime() / 1000);
-      const evs = db
-        .prepare(
-          "SELECT message FROM events WHERE created_at BETWEEN ? AND ? ORDER BY created_at DESC, id DESC LIMIT 4",
-        )
-        .all(tradeUnix - 900, tradeUnix + 900) as { message: string }[];
-      if (evs.length) {
-        lines.push(`• what was on my mind:`);
-        for (const e of evs) lines.push(`  · ${esc(e.message.slice(0, 140))}`);
+    // The real reasoning: the trade's OWN decision row, joined by decision_id.
+    // This is exact — no more guessing with a time window.
+    const d = t.decision_id
+      ? (db
+          .prepare("SELECT source, action, symbol, size_usdg, reason, dropped_rule FROM decisions WHERE id = ?")
+          .get(t.decision_id) as
+          | { source: string; action: string | null; symbol: string | null; size_usdg: number | null; reason: string | null; dropped_rule: string | null }
+          | undefined)
+      : undefined;
+    if (d) {
+      const head = [d.action, d.symbol, d.size_usdg != null ? `${d.size_usdg.toFixed(2)} USDG` : null].filter(Boolean).join(" ");
+      lines.push(`• decision: ${esc(head || d.source)} · via ${esc(d.source)}`);
+      if (d.reason) lines.push(`• my reasoning: ${esc(d.reason.slice(0, 220))}`);
+      if (d.dropped_rule) lines.push(`• dropped: ${esc(d.dropped_rule.slice(0, 140))}`);
+    } else {
+      // Legacy fallback for trades written before decisions existed: the old
+      // ±15-min event-window guess. New trades never take this path.
+      try {
+        const tradeUnix =
+          typeof t.created_at === "number" ? t.created_at : Math.floor(new Date(t.created_at).getTime() / 1000);
+        const evs = db
+          .prepare(
+            "SELECT message FROM events WHERE created_at BETWEEN ? AND ? ORDER BY created_at DESC, id DESC LIMIT 4",
+          )
+          .all(tradeUnix - 900, tradeUnix + 900) as { message: string }[];
+        if (evs.length) {
+          lines.push(`• what was on my mind (approx):`);
+          for (const e of evs) lines.push(`  · ${esc(e.message.slice(0, 140))}`);
+        }
+      } catch {
+        /* no events */
       }
-    } catch {
-      /* no events */
     }
     return { text: lines.join("\n"), hasTrade: true };
   } finally {

@@ -7,10 +7,28 @@
  * unvalidated intent.
  */
 
+import { randomUUID } from "node:crypto";
 import type { TradeIntent } from "../policy";
 import type { Snapshot, Strategy } from "../strategies/types";
 import { parseProposals, proposalsToIntents, type StrategistUniverse } from "./proposals";
 import type { ProposalDriver, Signals } from "./driver";
+
+/** A decision the strategist made this window — survivor (linked to an intent via
+ * its id) or drop (dropped_rule set). Deliberately store-agnostic: index.ts adds
+ * agent_id and persists it, so this module stays DB-free and unit-testable. */
+export interface StrategistDecision {
+  id: string;
+  source: "strategist";
+  strategy: string;
+  provider?: string;
+  model?: string;
+  symbol?: string;
+  action?: string;
+  size_usdg?: number;
+  reason?: string;
+  dropped_rule?: string;
+  signals_json?: string;
+}
 
 export interface LlmStrategistConfig {
   driver: ProposalDriver;
@@ -21,6 +39,12 @@ export interface LlmStrategistConfig {
   now?: () => number;
   /** Where dropped proposals and reasons get reported (worker event log). */
   onNote?: (level: "ok" | "warn", message: string) => void;
+  /** Persist each decision (survivor + drop). When set, survivors get a stamped
+   * decisionId; when absent (e.g. backtest) no ids are minted. Provider/model
+   * label which brain reasoned, for later per-model attribution. */
+  onDecision?: (d: StrategistDecision) => void | Promise<void>;
+  provider?: string;
+  model?: string;
 }
 
 function buildSignals(snap: Snapshot, universe: StrategistUniverse, at: Date): Signals {
@@ -52,19 +76,21 @@ function buildSignals(snap: Snapshot, universe: StrategistUniverse, at: Date): S
 export function makeLlmStrategist(cfg: LlmStrategistConfig): Strategy {
   const now = cfg.now ?? Date.now;
   const note = cfg.onNote ?? (() => {});
+  const name = `llm-strategist(${cfg.driver.name})`;
   let lastDecisionAt: number | null = null;
 
   return {
-    name: `llm-strategist(${cfg.driver.name})`,
+    name,
     async tick(snap: Snapshot): Promise<TradeIntent[]> {
       if (!snap.sequencerUp) return [];
       const t = now();
       if (lastDecisionAt !== null && t - lastDecisionAt < cfg.decisionIntervalMs) return [];
       lastDecisionAt = t;
 
+      const signals = buildSignals(snap, cfg.universe, new Date(t));
       let raw: unknown;
       try {
-        raw = await cfg.driver.propose(buildSignals(snap, cfg.universe, new Date(t)));
+        raw = await cfg.driver.propose(signals);
       } catch (e) {
         note("warn", `strategist driver failed: ${e instanceof Error ? e.message : String(e)}`);
         return [];
@@ -73,7 +99,28 @@ export function makeLlmStrategist(cfg: LlmStrategistConfig): Strategy {
       const { actions, malformed } = parseProposals(raw);
       if (malformed > 0) note("warn", `strategist emitted ${malformed} malformed action(s) — dropped`);
 
-      const { intents, rejected } = proposalsToIntents(actions, cfg.universe, snap);
+      const { intents, accepted, rejected } = proposalsToIntents(actions, cfg.universe, snap);
+
+      // Journal the decision BEFORE the intent leaves for the policy wall: every
+      // survivor gets a decisionId stamped onto its intent (so the resulting trade
+      // links back), every drop is recorded with its reason. This is the join key
+      // that makes "did that reasoning make money" answerable later.
+      if (cfg.onDecision) {
+        const signalsJson = JSON.stringify(signals);
+        const base = { source: "strategist" as const, strategy: name, provider: cfg.provider, model: cfg.model, signals_json: signalsJson };
+        for (let i = 0; i < intents.length; i++) {
+          const intent = intents[i];
+          const a = accepted[i];
+          if (!intent || !a) continue; // parallel arrays — invariant, but keep TS + runtime safe
+          const id = randomUUID();
+          intent.decisionId = id;
+          await cfg.onDecision({ ...base, id, symbol: a.symbol, action: a.action, size_usdg: a.sizeUsdg, reason: a.reason });
+        }
+        for (const r of rejected) {
+          await cfg.onDecision({ ...base, id: randomUUID(), dropped_rule: r });
+        }
+      }
+
       for (const r of rejected) note("warn", `strategist proposal dropped: ${r}`);
       for (const a of actions) {
         if (a.action !== "hold" && a.reason) {

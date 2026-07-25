@@ -8,7 +8,7 @@
 import { CASH, MORPHO, STOCK_TOKENS, type StockToken } from "../../../packages/core/src/index";
 import type { LlmCreds } from "../llm";
 import { createDriver, nullDriver } from "../strategist/driver";
-import { makeLlmStrategist } from "../strategist/strategy";
+import { makeLlmStrategist, type StrategistDecision } from "../strategist/strategy";
 import { makeCustomStrategy } from "./custom";
 import { steadyBasketTick, type SteadyBasketConfig } from "./steady-basket";
 import { weekendGapTick, type WeekendGapConfig } from "./weekend-gap";
@@ -36,7 +36,13 @@ export interface StrategyBuildOpts {
   buyPerTickUsdg: number;
   idleFloorUsdg: number;
   gapEnterBudgetUsdg: number;
-  llm: { creds: LlmCreds | null; intervalMin: number; maxActionUsdg: number };
+  llm: {
+    creds: LlmCreds | null;
+    intervalMin: number;
+    maxActionUsdg: number;
+    /** Persist each strategist decision (survivor + drop) — see makeLlmStrategist. */
+    onDecision?: (d: StrategistDecision) => void | Promise<void>;
+  };
   onNote?: (level: "ok" | "warn", message: string) => void;
 }
 
@@ -78,6 +84,9 @@ export function buildStrategy(name: string, opts: StrategyBuildOpts): Strategy {
       },
       decisionIntervalMs: opts.llm.intervalMin * 60_000,
       onNote: opts.onNote,
+      onDecision: opts.llm.onDecision,
+      provider: opts.llm.creds?.provider,
+      model: opts.llm.creds?.model,
     });
   }
   if (name === "weekend-gap") {

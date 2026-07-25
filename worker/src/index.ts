@@ -76,10 +76,12 @@ import { ensureSoul, getName } from "./soul";
 import { readPositions, type Position } from "./positions";
 import { readAccountBalances, readMarketSafety, setMainnetRpc } from "./snapshot";
 import {
+  addDecision,
   addEquity,
   addEvent,
   addFeeAccrual,
   addTrade,
+  newDecisionId,
   ensureAgent,
   getAgentFinancials,
   getOpsToday,
@@ -194,6 +196,11 @@ async function main() {
         creds: resolveLlm(c),
         intervalMin: c.llmIntervalMin,
         maxActionUsdg: c.llmMaxActionUsdg,
+        // Persist every strategist decision (survivor + drop) against the CURRENT
+        // agent — the strategist stamps each survivor's intent with the id it wrote.
+        onDecision: (d) => {
+          if (active) return addDecision({ ...d, agent_id: active.agentId });
+        },
       },
       onNote: strategyNote,
     });
@@ -353,9 +360,50 @@ async function main() {
     return true;
   }
 
+  // Best-effort token → symbol for decision labels (unknown tokens → undefined).
+  const symbolOfToken = (addr?: string): string | undefined => {
+    if (!addr) return undefined;
+    const lc = addr.toLowerCase();
+    return (
+      watchTokens.find((t) => t.address.toLowerCase() === lc)?.symbol ??
+      STOCK_TOKENS.find((t) => t.address.toLowerCase() === lc)?.symbol
+    );
+  };
+
+  /** Derive a decision's {action, symbol, size} from a typed intent — no model
+   * text, just the structure, so deterministic strategies + chat are attributable. */
+  function describeIntent(intent: TradeIntent): { action: string; symbol?: string; sizeUsdg: number } {
+    if (intent.kind === "swap") {
+      const buyingStock = intent.buyToken.toLowerCase() !== (CASH.USDG as string).toLowerCase();
+      return {
+        action: buyingStock ? "buy" : "sell",
+        symbol: symbolOfToken(buyingStock ? intent.buyToken : intent.sellToken),
+        sizeUsdg: usdgNum(intent.notionalUsdg),
+      };
+    }
+    if (intent.kind === "transfer") return { action: "transfer", sizeUsdg: usdgNum(intent.amountUsdg) };
+    return { action: intent.kind, sizeUsdg: usdgNum(intent.amountUsdg) };
+  }
+
+  /** Guarantee the intent carries a decisionId + a persisted decision row before it
+   * hits the wall. No-op when already stamped — the strategist journals its own
+   * survivors (with the model's reason); this covers deterministic strategies,
+   * chat, and selftest so EVERY trade is attributable to a decision. */
+  async function ensureDecision(intent: TradeIntent, source: string, reason?: string): Promise<void> {
+    if (intent.decisionId || !active) return;
+    const id = newDecisionId();
+    intent.decisionId = id;
+    const d = describeIntent(intent);
+    await addDecision({ id, agent_id: active.agentId, source, symbol: d.symbol, action: d.action, size_usdg: d.sizeUsdg, reason });
+  }
+
   async function processIntent(intent: TradeIntent, equityUsdg: bigint): Promise<void> {
     if (!active) return;
     const { agentId, limits, executor } = active;
+    const decision_id = intent.decisionId;
+    // Every trade this intent writes — approved, rejected, paper, landed, reverted —
+    // carries the same decision link, so the ledger is joinable to the reasoning.
+    const recordTrade = (row: TradeRow) => addTrade({ ...row, decision_id });
     const state: AgentState = {
       spentTodayUsdg,
       opsToday,
@@ -369,7 +417,7 @@ async function main() {
     if (!verdict.ok) {
       console.log(`[policy] REJECTED ${intent.kind}: ${verdict.rule} — ${verdict.detail}`);
       await addEvent(agentId, "warn", `policy rejected ${intent.kind}: ${verdict.rule} — ${verdict.detail}`);
-      await addTrade({
+      await recordTrade({
         agent_id: agentId,
         kind: intent.kind,
         target: intent.target,
@@ -402,7 +450,7 @@ async function main() {
       if (!fill.ok) {
         console.log(`[paper] refused ${intent.kind}: ${fill.reason}`);
         await addEvent(agentId, "warn", `paper fill refused: ${fill.reason}`);
-        await addTrade({
+        await recordTrade({
           agent_id: agentId,
           kind: intent.kind,
           target: intent.target,
@@ -423,7 +471,7 @@ async function main() {
       opsToday += 1;
       console.log(`[paper] ${fill.receipt}`);
       await addEvent(agentId, "ok", `📜 ${fill.receipt} — inside the wall, nothing signed`);
-      await addTrade({
+      await recordTrade({
         agent_id: agentId,
         kind: intent.kind,
         target: intent.target,
@@ -461,7 +509,7 @@ async function main() {
         if (!quote) {
           console.log(`[quote] no executable Uniswap route for ${intent.buyToken} — skipped`);
           await addEvent(agentId, "warn", `no Uniswap route for ${intent.buyToken} — swap skipped`);
-          await addTrade({
+          await recordTrade({
             agent_id: agentId,
             kind: intent.kind,
             target: intent.target,
@@ -531,7 +579,7 @@ async function main() {
         if (!quote) {
           console.log(`[rialto] no executable quote: ${reason}`);
           await addEvent(agentId, "warn", `Rialto quote refused: ${reason} — swap skipped`);
-          await addTrade({
+          await recordTrade({
             agent_id: agentId,
             kind: intent.kind,
             target: intent.target,
@@ -605,7 +653,7 @@ async function main() {
 
       console.log(`[execute] ${intent.kind} landed: ${txHash}`);
       await addEvent(agentId, "ok", `${intent.kind} landed (${fmt(notional)} USDG): ${txHash}`);
-      await addTrade({
+      await recordTrade({
         agent_id: agentId,
         kind: intent.kind,
         target: intent.target,
@@ -632,7 +680,7 @@ async function main() {
         : `couldn't submit: ${msg.replace(/\s+/g, " ").slice(0, 80)}`;
       console.error(`[execute] ${intent.kind} failed:`, msg);
       await addEvent(agentId, "err", `${intent.kind} ${onChain ? "reverted on-chain" : "failed before submit"}: ${msg.slice(0, 200)}`);
-      await addTrade({
+      await recordTrade({
         agent_id: agentId,
         kind: intent.kind,
         target: intent.target,
@@ -899,6 +947,9 @@ async function main() {
     circleBlockedNoted = false;
 
     for (const intent of await strategy.tick(snap)) {
+      // The LLM strategist already journaled + stamped its survivors; this covers
+      // deterministic strategies so every trade still links to a decision.
+      await ensureDecision(intent, `strategy:${strategy.name}`);
       await processIntent(intent, equityUsdg);
     }
   }
@@ -910,7 +961,9 @@ async function main() {
       process.exit(1);
     }
     console.log("[selftest] sending policy-legal no-op through the full pipeline…");
-    await processIntent(selfTestIntent(), 0n);
+    const probe = selfTestIntent();
+    await ensureDecision(probe, "selftest", "pipeline probe (approve dust) — not a market view");
+    await processIntent(probe, 0n);
     console.log("[selftest] done");
     process.exit(0);
   }
@@ -937,6 +990,7 @@ async function main() {
       if (sellRaw === 0n) return `${symbol} amount rounds to zero shares.`;
       intent = { kind: "swap", target: router, sellToken: token, buyToken: CASH.USDG as `0x${string}`, sellAmountRaw: sellRaw, notionalUsdg: notional };
     }
+    await ensureDecision(intent, "chat", `owner asked to ${side} ${usdgAmount} USDG ${symbol} in chat`);
     await processIntent(intent, lastEquityUsdg);
     return `🏹 submitted ${side} ${usdgAmount} USDG ${symbol} — watch /trades for the result (it still passes the policy wall).`;
   }
@@ -956,6 +1010,7 @@ async function main() {
       recipient: to,
       amountUsdg: usdg(usdgAmount),
     };
+    await ensureDecision(intent, "chat", `owner asked to transfer ${usdgAmount} USDG to ${to} in chat`);
     await processIntent(intent, lastEquityUsdg);
     return `📤 transfer submitted — ${usdgAmount} USDG to ${to.slice(0, 6)}…${to.slice(-4)}. Watch /trades for the result (it still passes the policy wall).`;
   }

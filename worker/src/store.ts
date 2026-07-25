@@ -6,6 +6,7 @@
  */
 
 import { DatabaseSync } from "node:sqlite";
+import { randomUUID } from "node:crypto";
 import type { StoredGrant } from "../../packages/core/src/index";
 import { ensureHome, homePaths } from "./home";
 
@@ -93,6 +94,26 @@ function getDb(): DatabaseSync {
       shares TEXT NOT NULL DEFAULT '{}',
       updated_at INTEGER NOT NULL DEFAULT (unixepoch())
     );
+    -- Every proposal the agent made — SURVIVING (linked to a trade via
+    -- trades.decision_id) and DROPPED (dropped_rule set, no trade). This is the
+    -- attribution substrate: it turns "why did you trade" from a ±15-min event
+    -- guess into a real join, and is the prerequisite for learning from outcomes.
+    CREATE TABLE IF NOT EXISTS decisions (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      source TEXT NOT NULL,        -- 'strategist' | 'strategy:<name>' | 'chat' | 'selftest'
+      strategy TEXT,
+      provider TEXT,
+      model TEXT,
+      symbol TEXT,
+      action TEXT,                 -- 'buy' | 'sell' | 'hold' | 'transfer' | ...
+      size_usdg REAL,
+      reason TEXT,                 -- the model's own words (never fed back into policy)
+      dropped_rule TEXT,           -- non-null when the proposal was dropped before execution
+      signals_json TEXT,           -- the inputs the decision was made on (for later review)
+      at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS decisions_agent_time ON decisions (agent_id, at DESC);
   `);
   for (const ddl of [
     "ALTER TABLE equity ADD COLUMN positions_usdg REAL NOT NULL DEFAULT 0",
@@ -105,6 +126,8 @@ function getDb(): DatabaseSync {
     "ALTER TABLE trades ADD COLUMN sim_min_out TEXT",
     "ALTER TABLE trades ADD COLUMN sim_fee_tier INTEGER",
     "ALTER TABLE trades ADD COLUMN sim_gas TEXT",
+    // Attribution link: which decision produced this trade (see decisions table).
+    "ALTER TABLE trades ADD COLUMN decision_id TEXT",
   ]) {
     try {
       db.exec(ddl);
@@ -138,6 +161,56 @@ export interface TradeRow {
   sim_min_out?: string;
   sim_fee_tier?: number;
   sim_gas?: string;
+  /** Attribution: the decisions.id that produced this trade (null for legacy rows). */
+  decision_id?: string;
+}
+
+/** One row in the decisions table — the proposal, its reasoning, and its fate. */
+export interface DecisionRow {
+  id: string;
+  agent_id: string;
+  source: string;
+  strategy?: string;
+  provider?: string;
+  model?: string;
+  symbol?: string;
+  action?: string;
+  size_usdg?: number;
+  reason?: string;
+  /** Set when the proposal was dropped before execution (no trade will link to it). */
+  dropped_rule?: string;
+  signals_json?: string;
+}
+
+/** A fresh decision id. Kept here so every producer stamps the same shape. */
+export function newDecisionId(): string {
+  return randomUUID();
+}
+
+export async function addDecision(row: DecisionRow): Promise<void> {
+  try {
+    getDb()
+      .prepare(
+        `INSERT INTO decisions (id, agent_id, source, strategy, provider, model, symbol, action, size_usdg, reason, dropped_rule, signals_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        row.id,
+        row.agent_id,
+        row.source,
+        row.strategy ?? null,
+        row.provider ?? null,
+        row.model ?? null,
+        row.symbol ?? null,
+        row.action ?? null,
+        row.size_usdg ?? null,
+        row.reason ?? null,
+        row.dropped_rule ?? null,
+        row.signals_json ?? null,
+      );
+  } catch (e) {
+    console.error("[store] decision insert failed:", e);
+  }
 }
 
 export async function ensureAgent(grant: StoredGrant): Promise<string> {
@@ -230,8 +303,8 @@ export async function addTrade(row: TradeRow): Promise<void> {
     getDb()
       .prepare(
         `INSERT INTO trades (agent_id, kind, target, sell_token, buy_token, amount_usdg, user_op_hash, tx_hash, status, reject_rule,
-                             sim_quote_out, sim_min_out, sim_fee_tier, sim_gas)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                             sim_quote_out, sim_min_out, sim_fee_tier, sim_gas, decision_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         row.agent_id,
@@ -248,6 +321,7 @@ export async function addTrade(row: TradeRow): Promise<void> {
         row.sim_min_out ?? null,
         row.sim_fee_tier ?? null,
         row.sim_gas ?? null,
+        row.decision_id ?? null,
       );
   } catch (e) {
     console.error("[store] trade insert failed:", e);

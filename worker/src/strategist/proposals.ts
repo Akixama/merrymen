@@ -33,6 +33,10 @@ export interface StrategistUniverse {
 
 export interface ValidationResult {
   intents: TradeIntent[];
+  /** The originating action for each survivor — accepted[i] produced intents[i].
+   * Lets the caller journal each decision (symbol/action/size/reason) without
+   * re-deriving the pairing, while intents stays a pure TradeIntent[]. */
+  accepted: ProposedAction[];
   /** Human-readable reasons for every dropped action — honesty in the log. */
   rejected: string[];
 }
@@ -50,6 +54,7 @@ export function proposalsToIntents(
   snap: Snapshot,
 ): ValidationResult {
   const intents: TradeIntent[] = [];
+  const accepted: ProposedAction[] = [];
   const rejected: string[] = [];
   let cashLeft = snap.cashUsdg;
 
@@ -93,6 +98,7 @@ export function proposalsToIntents(
         sellAmountRaw: size,
         notionalUsdg: size,
       });
+      accepted.push(p);
     } else {
       const held = snap.holdings.get(p.symbol);
       if (!held || held.rawBalance === 0n) {
@@ -118,10 +124,11 @@ export function proposalsToIntents(
         sellAmountRaw: sellRaw,
         notionalUsdg: notional,
       });
+      accepted.push(p);
     }
   }
 
-  return { intents, rejected };
+  return { intents, accepted, rejected };
 }
 
 /** Shape-check raw model output into ProposedActions; junk is dropped, not repaired. */
