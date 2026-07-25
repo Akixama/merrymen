@@ -40,6 +40,7 @@ export interface BacktestResult {
   equitySeries: { tSec: number; equityUsdg: bigint }[];
   executed: number;
   rejected: { rule: string; count: number }[];
+  rejectedEvents: { tSec: number; rule: string }[];
 }
 
 const ONE = 10n ** 18n;
@@ -76,6 +77,7 @@ export async function runBacktest(cfg: BacktestConfig, bars: readonly Bar[]): Pr
   let maxDrawdownBps = 0;
   let executed = 0;
   const rejectCounts = new Map<string, number>();
+  const rejectedEvents: { tSec: number; rule: string }[] = [];
   const equitySeries: { tSec: number; equityUsdg: bigint }[] = [];
   let prevT: number | null = null;
 
@@ -150,7 +152,8 @@ export async function runBacktest(cfg: BacktestConfig, bars: readonly Bar[]): Pr
       };
       const verdict = checkPolicy(intent, cfg.limits, state);
       if (!verdict.ok) {
-        rejectCounts.set(verdict.rule, (rejectCounts.get(verdict.rule) ?? 0) + 1);
+         rejectCounts.set(verdict.rule, (rejectCounts.get(verdict.rule) ?? 0) + 1);
+         rejectedEvents.push({ tSec: bar.tSec, rule: verdict.rule });
         continue;
       }
       applyFill(intent);
@@ -208,13 +211,14 @@ export async function runBacktest(cfg: BacktestConfig, bars: readonly Bar[]): Pr
   const last = equitySeries[equitySeries.length - 1];
   const finalEquity = last ? last.equityUsdg : cfg.initialCashUsdg;
   return {
-    finalEquityUsdg: finalEquity,
-    pnlUsdg: finalEquity - cfg.initialCashUsdg,
-    maxDrawdownBps,
-    equitySeries,
-    executed,
-    rejected: [...rejectCounts.entries()].map(([rule, count]) => ({ rule, count })),
-  };
+  finalEquityUsdg: finalEquity,
+  pnlUsdg: finalEquity - cfg.initialCashUsdg,
+  maxDrawdownBps,
+  equitySeries,
+  executed,
+  rejected: [...rejectCounts.entries()].map(([rule, count]) => ({ rule, count })),
+  rejectedEvents,
+};
 }
 
 export { ONE };
