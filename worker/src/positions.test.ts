@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { positionValueUsdg } from "./positions";
+import type { PublicClient } from "viem";
+import { positionValueUsdg, readPositions } from "./positions";
+import type { StockToken } from "../../packages/core/src/index";
 
 const ONE = 10n ** 18n; // 1.0 in both raw-balance (18dp) and multiplier terms
 const usd = (v: number) => BigInt(Math.round(v * 1e8)); // Chainlink 8dp
@@ -48,5 +50,71 @@ describe("positionValueUsdg (ERC-8056)", () => {
     const v = positionValueUsdg({ rawBalance: raw, uiMultiplier: ONE, price8: usd(575.31) });
     // 0.034209200024468519 × 575.31 = 19.680894866… → floors to 19.680894 USDG
     assert.equal(v, 19_680_894n);
+  });
+});
+
+const tok = (symbol: string, address: `0x${string}`): StockToken => ({
+  symbol,
+  name: symbol,
+  address,
+  chainlinkFeed: "0x0000000000000000000000000000000000000001",
+  kind: "stock",
+});
+const AAPL = tok("AAPL", "0x00000000000000000000000000000000000000a1");
+const TSLA = tok("TSLA", "0x00000000000000000000000000000000000000b2");
+const good = (result: unknown) => ({ status: "success" as const, result });
+const bad = () => ({ status: "failure" as const, error: new Error("revert") });
+const client = (results: unknown[]): PublicClient => ({ multicall: async () => results }) as unknown as PublicClient;
+const ACCT = "0x000000000000000000000000000000000000dEaD" as const;
+
+describe("readPositions — a held holding is never silently valued at zero", () => {
+  it("a held token with a price is valued and not flagged", async () => {
+    const prices = new Map([["AAPL", { price8: usd(200), stale: false }]]);
+    const r = await readPositions(client([good(5n * ONE), good(ONE)]), ACCT, [AAPL], prices);
+    assert.equal(r.positions.length, 1);
+    assert.equal(r.positions[0].symbol, "AAPL");
+    assert.deepEqual(r.missingPrice, []);
+  });
+
+  it("a HELD token whose feed price is missing goes to missingPrice (the equity-crater bug)", async () => {
+    const r = await readPositions(client([good(5n * ONE), good(ONE)]), ACCT, [AAPL], new Map());
+    assert.deepEqual(r.positions, []);
+    assert.deepEqual(r.missingPrice, ["AAPL"]);
+  });
+
+  it("a HELD token whose multiplier read reverts is flagged, not mispriced at 1.0", async () => {
+    const prices = new Map([["AAPL", { price8: usd(200), stale: false }]]);
+    const r = await readPositions(client([good(5n * ONE), bad()]), ACCT, [AAPL], prices);
+    assert.deepEqual(r.positions, []);
+    assert.deepEqual(r.missingPrice, ["AAPL"]);
+  });
+
+  it("a zero-balance token is not held — absent from both lists (not a coverage gap)", async () => {
+    const prices = new Map([["AAPL", { price8: usd(200), stale: false }]]);
+    const r = await readPositions(client([good(0n), good(ONE)]), ACCT, [AAPL], prices);
+    assert.deepEqual(r.positions, []);
+    assert.deepEqual(r.missingPrice, []);
+  });
+
+  it("mixed: one priced holding valued, one unpriced holding flagged", async () => {
+    const prices = new Map([["AAPL", { price8: usd(200), stale: false }]]); // TSLA absent
+    const r = await readPositions(client([good(ONE), good(ONE), good(2n * ONE), good(ONE)]), ACCT, [AAPL, TSLA], prices);
+    assert.deepEqual(r.positions.map((p) => p.symbol), ["AAPL"]);
+    assert.deepEqual(r.missingPrice, ["TSLA"]);
+  });
+
+  it("stale-but-present price still values the holding (weekend prices aren't a gap)", async () => {
+    const prices = new Map([["AAPL", { price8: usd(200), stale: true }]]);
+    const r = await readPositions(client([good(5n * ONE), good(ONE)]), ACCT, [AAPL], prices);
+    assert.equal(r.positions.length, 1);
+    assert.equal(r.positions[0].priceStale, true);
+    assert.deepEqual(r.missingPrice, []);
+  });
+
+  it("a totally failed multicall values nothing and reports no false holdings", async () => {
+    const broken = { multicall: async () => { throw new Error("rpc down"); } } as unknown as PublicClient;
+    const r = await readPositions(broken, ACCT, [AAPL], new Map());
+    assert.deepEqual(r.positions, []);
+    assert.deepEqual(r.missingPrice, []);
   });
 });

@@ -73,7 +73,7 @@ import { startVirtualsStreamer } from "./virtuals-streamer";
 import { createStateRef } from "./telegram/state";
 import { readPositionRaw } from "./telegram/reads";
 import { ensureSoul, getName } from "./soul";
-import { readPositions } from "./positions";
+import { readPositions, type Position } from "./positions";
 import { readAccountBalances, readMarketSafety, setMainnetRpc } from "./snapshot";
 import {
   addEquity,
@@ -694,15 +694,24 @@ async function main() {
 
     const paper = paperActive();
     let balances: { ethWei: bigint; cashUsdg: bigint; vaultUsdg: bigint };
-    let positions: Awaited<ReturnType<typeof readPositions>>;
+    let positions: Position[];
+    // Symbols the account HOLDS but couldn't be valued this tick (feed/multiplier
+    // read failed). Valuing them at 0 would crater equity and can trip the drawdown
+    // breaker on a transient hiccup — so a non-empty list means "hold this tick".
+    let missingPrice: string[] = [];
     if (paper) {
       // The book IS the paper ledger, marked to market at the live oracle px.
       const bookRow = await getPaperBook(agentId, cfg.paperStartUsdg);
       balances = { ethWei: 0n, cashUsdg: usdg(bookRow.cashUsdg), vaultUsdg: usdg(bookRow.vaultUsdg) };
-      positions = paperPositionsOf(bookRow.shares).flatMap((p) => {
+      positions = [];
+      for (const p of paperPositionsOf(bookRow.shares)) {
+        if (p.shares <= 0) continue;
         const px = paperPriceOf(p.token);
-        if (!px) return [];
-        return [{
+        if (!px) {
+          missingPrice.push(p.symbol);
+          continue;
+        }
+        positions.push({
           symbol: p.symbol,
           token: p.token,
           rawBalance: BigInt(Math.round(p.shares * 1e18)),
@@ -710,14 +719,28 @@ async function main() {
           price8: BigInt(Math.round(px.priceUsd * 1e8)),
           priceStale: px.stale,
           valueUsdg: usdg(p.shares * px.priceUsd),
-        }];
-      });
+        });
+      }
     } else {
-      [balances, positions] = await Promise.all([
+      const [bal, posRead] = await Promise.all([
         readAccountBalances(client, grant.smartAccount),
         readPositions(client, grant.smartAccount, watchTokens, market.prices),
       ]);
+      balances = bal;
+      positions = posRead.positions;
+      missingPrice = posRead.missingPrice;
     }
+
+    // Fail closed on incomplete valuation. A held position we can't price is NOT
+    // worth zero — recording it as such books a phantom drawdown that trips the
+    // breaker and mis-marks equity. Skip valuation + trading this tick; the next
+    // full-coverage tick resumes. Persistent gaps keep surfacing as warnings.
+    if (missingPrice.length) {
+      console.log(`[tick] incomplete market coverage — no price for held ${missingPrice.join(",")}; holding (equity + breaker skipped, not a real drawdown)`);
+      await addEvent(agentId, "warn", `held ${missingPrice.join(", ")} couldn't be priced this tick — trading + equity paused (fail-closed); this is a data gap, not a loss`);
+      return;
+    }
+
     const positionsUsdg = positions.reduce((sum, p) => sum + p.valueUsdg, 0n);
     // Equity is the whole book — cash, vault, and multiplier-aware stock value —
     // so the drawdown breaker judges reality, not just the cash ledger.

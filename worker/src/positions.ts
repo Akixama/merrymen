@@ -45,17 +45,32 @@ export function positionValueUsdg(args: {
   return (args.rawBalance * args.uiMultiplier * args.price8) / DENOM;
 }
 
+export interface PositionsRead {
+  positions: Position[];
+  /**
+   * Symbols the account genuinely HOLDS (balance > 0) but that we could not value
+   * this read — the multiplier reverted, or no current price was available. Valuing
+   * these at zero would crater equity and can trip the drawdown breaker on a
+   * transient RPC/feed hiccup, so the caller must treat the snapshot as INCOMPLETE
+   * (fail closed) rather than trust a total that's silently missing a holding.
+   * Distinct from "not held" (balance 0), which is simply absent from both lists.
+   */
+  missingPrice: string[];
+}
+
 /**
  * Read balances + multipliers for `tokens` from the account's chain and value
  * them with the supplied mainnet Chainlink prices. Tokens that don't exist on
- * the account's chain (testnet demo) read as zero and are dropped.
+ * the account's chain (testnet demo) read as zero and are dropped. A token that
+ * IS held but can't be valued (feed/multiplier read failed) is reported in
+ * `missingPrice` — never silently valued at zero.
  */
 export async function readPositions(
   client: PublicClient,
   account: `0x${string}`,
   tokens: readonly StockToken[],
   prices: ReadonlyMap<string, { price8: bigint; stale: boolean }>,
-): Promise<Position[]> {
+): Promise<PositionsRead> {
   const results = await client
     .multicall({
       contracts: tokens.flatMap(
@@ -67,21 +82,30 @@ export async function readPositions(
       ),
     })
     .catch(() => null);
-  if (!results) return [];
+  // Whole read failed — we can't tell held from unheld. Report nothing valued and
+  // no coverage; the tick can't trust this, but "" avoids a per-symbol miss list.
+  if (!results) return { positions: [], missingPrice: [] };
 
   const positions: Position[] = [];
+  const missingPrice: string[] = [];
   tokens.forEach((t, i) => {
     const bal = results[i * 2];
     const mult = results[i * 2 + 1];
-    if (bal?.status !== "success") return;
+    if (bal?.status !== "success") return; // balance unreadable → can't say it's held
     const rawBalance = bal.result as bigint;
-    if (rawBalance === 0n) return;
-    // A live token with an unreadable multiplier is unvaluable — surface as 1.0
-    // is WRONG post-split, so skip it entirely rather than misprice it.
-    if (mult?.status !== "success") return;
+    if (rawBalance === 0n) return; // genuinely not held — not a coverage gap
+    // Held, but unvaluable: an unreadable multiplier mis-prices post-split, and a
+    // missing/zero price can't be valued at all. Fail closed — flag, don't drop.
+    if (mult?.status !== "success") {
+      missingPrice.push(t.symbol);
+      return;
+    }
     const uiMultiplier = mult.result as bigint;
     const price = prices.get(t.symbol);
-    if (!price || price.price8 <= 0n) return;
+    if (!price || price.price8 <= 0n) {
+      missingPrice.push(t.symbol);
+      return;
+    }
 
     positions.push({
       symbol: t.symbol,
@@ -93,5 +117,5 @@ export async function readPositions(
       valueUsdg: positionValueUsdg({ rawBalance, uiMultiplier, price8: price.price8 }),
     });
   });
-  return positions;
+  return { positions, missingPrice };
 }
