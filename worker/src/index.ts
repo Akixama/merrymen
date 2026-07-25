@@ -516,6 +516,14 @@ async function main() {
             "paper",
           )
         : null;
+      // The paper book rounds share counts to 6dp while basis tracks exact raw
+      // units, so a fully-closed position can leave sub-dust basis behind. The
+      // book is the source of truth for what's held: if the symbol is gone from
+      // it, the basis is flat too — otherwise stale dust would silently become
+      // the cost of the NEXT position in that symbol.
+      if (fill.fill && !fill.positions.some((p) => p.symbol === fill.fill!.symbol)) {
+        setBasis(agentId, fill.fill.symbol, { qtyRaw: 0n, costUsdg: 0n });
+      }
       await recordTrade({
         agent_id: agentId,
         kind: intent.kind,
