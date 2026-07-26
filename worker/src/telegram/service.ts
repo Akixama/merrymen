@@ -59,6 +59,9 @@ import {
   rememberOwnerFact,
   setName as setSoulName,
   soulPromptBlock,
+  identityBlock,
+  memoryBlock,
+  lastRecalledIds,
 } from "../soul";
 
 export interface TelegramServiceDeps {
@@ -121,6 +124,10 @@ export function startTelegram(deps: TelegramServiceDeps): { stop: () => void } {
   const pending = new Map<string, PendingAction>(); // awaiting /confirm
   const linkFails = new Map<number, { fails: number; until: number }>();
   const history = new Map<number, { role: "user" | "assistant"; content: string }[]>();
+  // Memory ids surfaced on the previous turn, per chat. A follow-up like "is it
+  // done?" shares no words with anything on disk, so without carrying the last
+  // turn's ids forward the thread is lost the moment the topic isn't restated.
+  const stickyIds = new Map<number, Set<string>>();
   // One detached /agent task per chat; /agent stop flips the flag mid-run.
   const agentRuns = new Map<number, { stopped: boolean }>();
 
@@ -498,9 +505,13 @@ export function startTelegram(deps: TelegramServiceDeps): { stop: () => void } {
       const llm = resolveLlm(cfg);
       if (llm) {
         const st = stateRef.get();
-        const soulBlock = soulPromptBlock(st.linkedAt, st.messageCount, now());
-        const chatCtx = { state: `SOUL:\n${soulBlock}\n\n${readLlmState(statusCtx())}`, history: history.get(msg.chatId) };
-        const r = await interpretWithLlm(msg.text, chatCtx, llm);
+        // The classifier gets IDENTITY ONLY — it picks a value from a closed enum
+        // and has no use for recalled detail. Keeping memory out of this call also
+        // means a remembered line can never nudge routing toward a trade.
+        const identity = identityBlock(st.linkedAt, st.messageCount, now());
+        const liveState = readLlmState(statusCtx());
+        const routeCtx = { state: `SOUL:\n${identity}\n\n${liveState}`, history: history.get(msg.chatId) };
+        const r = await interpretWithLlm(msg.text, routeCtx, llm);
         cmd = r.cmd;
         // The get-to-know-you side-channel: the model proposes a fact, the
         // sanitizer disposes (drops addresses/keys/markup, dedupes, caps). Only the
@@ -508,9 +519,22 @@ export function startTelegram(deps: TelegramServiceDeps): { stop: () => void } {
         if (r.remember && isOwnerMsg) rememberOwnerFact(r.remember, now());
         // A conversational turn gets a warm, free-form voice — the classifier's
         // terse `reply` is for routing, not for talking. Text out triggers nothing.
+        //
+        // ONLY the narrator gets recalled memory, retrieved against what they
+        // actually just said, so a fact from months back is reachable when it's
+        // the one being asked about. Written AFTER the remember side-channel, so
+        // something learned this turn can be recalled in the very same reply.
         if (cmd.kind === "chat") {
+          const recalled = memoryBlock(msg.text, now(), stickyIds.get(msg.chatId));
+          const chatCtx = {
+            state: `SOUL:\n${identity}\n${recalled}\n\n${liveState}`,
+            history: history.get(msg.chatId),
+          };
           const fluent = await narrateChat(msg.text, chatCtx, llm);
           if (fluent) cmd = { kind: "chat", reply: fluent };
+          // Remember what was surfaced so a pronoun follow-up ("is it done?")
+          // keeps the same thread instead of losing it to zero word overlap.
+          stickyIds.set(msg.chatId, new Set(lastRecalledIds(msg.text, now(), stickyIds.get(msg.chatId))));
         }
       } else {
         cmd = { kind: "chat", reply: "pick an AI provider and paste its key in the dashboard (Settings → AI provider) to chat in plain English — Groq, Google and Cerebras are free, or run Ollama locally. For now, try /help." };
