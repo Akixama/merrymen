@@ -40,7 +40,7 @@ function EquityCurve({ series }: { series: CurveSeries[] }) {
     return { ...s, pointsAttr, dPath, length };
   });
 
-  return (
+return (
   <div>
     <svg className="playground-curve" width={w} height={h} viewBox={`0 0 ${w} ${h}`}>
       {lines.map((l) => (
@@ -59,26 +59,47 @@ function EquityCurve({ series }: { series: CurveSeries[] }) {
           <circle r={4} fill={l.color}>
             <animateMotion dur="1.4s" fill="freeze" calcMode="linear" path={l.dPath} />
           </circle>
-          {(l.rejectedEvents ?? []).map((ev, i) => {
+          {(() => {
             const t0 = l.points[0]!.tSec;
             const t1 = l.points[l.points.length - 1]!.tSec;
-            const frac = t1 > t0 ? (ev.tSec - t0) / (t1 - t0) : 0;
-            const x = frac * w;
-            return (
-              <line
-                key={i}
-                x1={x}
-                x2={x}
-                y1={h - 6}
-                y2={h}
-                stroke="var(--red)"
-                strokeWidth={1.5}
-                opacity={0.7}
-              >
-                <title>{ev.rule}</title>
-              </line>
-            );
-          })}
+            const span = t1 - t0 || 1;
+            const BIN_COUNT = 60;
+            const bins: { rules: Map<string, number> }[] = Array.from({ length: BIN_COUNT }, () => ({
+              rules: new Map<string, number>(),
+            }));
+
+            for (const ev of l.rejectedEvents ?? []) {
+              const frac = Math.min(0.999, Math.max(0, (ev.tSec - t0) / span));
+              const idx = Math.floor(frac * BIN_COUNT);
+              const bin = bins[idx]!;
+              bin.rules.set(ev.rule, (bin.rules.get(ev.rule) ?? 0) + 1);
+            }
+
+            const maxCount = Math.max(1, ...bins.map((b) => [...b.rules.values()].reduce((a, c) => a + c, 0)));
+            const binW = w / BIN_COUNT;
+
+            return bins.map((bin, i) => {
+              const total = [...bin.rules.values()].reduce((a, c) => a + c, 0);
+              if (total === 0) return null;
+              const opacity = 0.15 + (total / maxCount) * 0.65;
+              const dayStart = Math.floor((i / BIN_COUNT) * (span / 86_400));
+              const dayEnd = Math.floor(((i + 1) / BIN_COUNT) * (span / 86_400));
+              const summary = [...bin.rules.entries()].map(([r, c]) => `${r} ×${c}`).join(", ");
+              return (
+                <rect
+                  key={i}
+                  x={i * binW}
+                  y={h - 6}
+                  width={binW}
+                  height={6}
+                  fill="var(--red)"
+                  opacity={opacity}
+                >
+                  <title>{`day ${dayStart}–${dayEnd} · ${summary}`}</title>
+                </rect>
+              );
+            });
+          })()}
         </g>
       ))}
     </svg>
