@@ -18,7 +18,7 @@
  * smuggle a transfer recipient or credential back into a prompt.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { merrymenHome } from "./home";
 
@@ -46,10 +46,18 @@ function readSafe(file: string): string {
   }
 }
 
+/**
+ * Write atomically: full content to a temp file, then rename over the target.
+ * A plain writeFileSync truncates first, so a crash mid-write leaves the file
+ * empty — losing every fact at once. rename() is atomic on POSIX and Windows,
+ * so a reader sees either the old file or the new one, never a half of either.
+ */
 function writeSafe(file: string, content: string): void {
   try {
     mkdirSync(soulDir(), { recursive: true });
-    writeFileSync(file, content, "utf8");
+    const tmp = `${file}.tmp`;
+    writeFileSync(tmp, content, "utf8");
+    renameSync(tmp, file);
   } catch {
     // soul is flavor, never fatal
   }
@@ -180,10 +188,30 @@ export function rememberOwnerFact(raw: string, nowSec?: number): boolean {
   return true;
 }
 
+/**
+ * Strip the `- (YYYY-MM-DD) ` prefix, re-sanitize the body, and put the prefix
+ * back. Returns null for anything the sanitizer refuses.
+ *
+ * WHY RE-SANITIZE ON READ: sanitizeMemory/sanitizeNote historically ran only on
+ * WRITE, so these files — which are explicitly user-editable, and may be touched
+ * by an editor, a sync tool, or a restored backup — could carry an address, a
+ * secret-shaped blob, or markup straight into a prompt. The write-side check is
+ * necessary but not sufficient once the file is a document the user owns. This
+ * is the last gate before memory reaches the model, so it belongs here.
+ */
+function sanitizeDatedLine(line: string, sanitizer: (s: string) => string | null): string | null {
+  const m = /^- \((\d{4}-\d{2}-\d{2})\)\s*(.*)$/.exec(line);
+  if (!m) return null;
+  const body = sanitizer(m[2] ?? "");
+  return body ? `- (${m[1]}) ${body}` : null;
+}
+
 export function ownerFacts(): string[] {
   return readSafe(ownerFile())
     .split("\n")
-    .filter((l) => l.startsWith("- ("));
+    .filter((l) => l.startsWith("- ("))
+    .map((l) => sanitizeDatedLine(l, sanitizeMemory))
+    .filter((l): l is string => l !== null);
 }
 
 // ── notes (general durable memory: projects, names, how things are set up) ────
@@ -223,7 +251,9 @@ export function sanitizeNote(raw: string): string | null {
 export function notes(): string[] {
   return readSafe(notesFile())
     .split("\n")
-    .filter((l) => l.startsWith("- ("));
+    .filter((l) => l.startsWith("- ("))
+    .map((l) => sanitizeDatedLine(l, sanitizeNote))
+    .filter((l): l is string => l !== null);
 }
 
 /** The most recent notes, for prompt context. */
@@ -266,9 +296,23 @@ export function appendJournal(entry: string, nowSec?: number): void {
   writeSafe(journalFile(), content);
 }
 
+/**
+ * Neutralize a user-editable prose file before it reaches a prompt. The journal
+ * is free prose rather than discrete facts, so it can't be rejected line-by-line
+ * like OWNER/NOTES — instead the dangerous shapes are stripped in place. Same
+ * threat as sanitizeDatedLine: the file is the user's to edit, and appendJournal's
+ * write-side strip doesn't cover anything typed in afterwards.
+ */
+function scrubProse(text: string): string {
+  return text
+    .replace(/<[^>]*>/g, "") // no markup into prompts
+    .replace(/0x[0-9a-fA-F]{6,}/g, "[redacted]") // addresses / keys / calldata
+    .replace(/\b[A-Za-z0-9_-]{40,}\b/g, "[redacted]"); // token/secret-shaped blobs
+}
+
 /** The last few journal entries (for prompt context). */
 export function journalTail(maxChars = 1200): string {
-  const content = readSafe(journalFile());
+  const content = scrubProse(readSafe(journalFile()));
   if (content.length <= maxChars) return content.replace(/^# Journal[^\n]*\n+(<!--[^>]*-->\n+)?/, "");
   return `…${content.slice(-maxChars)}`;
 }
