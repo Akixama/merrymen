@@ -64,8 +64,14 @@ export async function runBacktest(cfg: BacktestConfig, bars: readonly Bar[]): Pr
   let vault = 0n;
   const shares = new Map<string, bigint>(); // symbol → raw 18dp
   let hwm = 0n;
-  let spentToday = 0n; // simplification: no daily reset within a run shorter than 24h bars
+  // The daily caps are a ROLLING 24h budget in production, so the harness has to
+  // roll them too. Without this, a multi-day run spends the whole budget on day 1
+  // and then rejects every later bar with `daily-cap` — which reads as "the policy
+  // wall blocked 1,020 trades" when it is really the harness never letting the day
+  // turn over. Reset both counters when a bar crosses into a new 24h window.
+  let spentToday = 0n;
   let ops = 0;
+  let dayIndex: number | null = null;
   let peak = 0n;
   let maxDrawdownBps = 0;
   let executed = 0;
@@ -79,6 +85,14 @@ export async function runBacktest(cfg: BacktestConfig, bars: readonly Bar[]): Pr
       vault += (vault * apyBps * BigInt(bar.tSec - prevT)) / (10_000n * YEAR_SEC);
     }
     prevT = bar.tSec;
+
+    // New day → the daily spend/ops budget refills, exactly as it does live.
+    const barDay = Math.floor(bar.tSec / 86_400);
+    if (dayIndex === null || barDay !== dayIndex) {
+      dayIndex = barDay;
+      spentToday = 0n;
+      ops = 0;
+    }
 
     const stale = bar.staleSymbols ?? new Set<string>();
     const holdings = new Map<string, Holding>();
@@ -115,6 +129,9 @@ export async function runBacktest(cfg: BacktestConfig, bars: readonly Bar[]): Pr
       pausedTokens: new Set(),
       staleFeeds: stale,
       sequencerUp: true,
+      spendHeadroomUsdg:
+        cfg.limits.dailyUsdg > spentToday ? cfg.limits.dailyUsdg - spentToday : 0n,
+      perTradeCapUsdg: cfg.limits.perTradeUsdg,
     };
 
     const intents = await cfg.strategy.tick(snap);

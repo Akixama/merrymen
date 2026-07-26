@@ -70,7 +70,7 @@ import type { Holding, Snapshot, Strategy } from "./strategies/types";
 import { isPaused, startTelegram } from "./telegram/service";
 import { startNotifier } from "./telegram/notifier";
 import { startVirtualsStreamer } from "./virtuals-streamer";
-import { createStateRef } from "./telegram/state";
+import { createStateRef, ensureLinkCode } from "./telegram/state";
 import { readPositionRaw } from "./telegram/reads";
 import { ensureSoul, getName } from "./soul";
 import { readPositions, type Position } from "./positions";
@@ -1041,6 +1041,11 @@ async function main() {
       pausedTokens: market.pausedTokens,
       staleFeeds: market.staleFeeds,
       sequencerUp: market.sequencerUp,
+      // What the wall will still accept today, so strategies size to reality
+      // instead of re-proposing oversized intents every tick.
+      spendHeadroomUsdg:
+        active.limits.dailyUsdg > spentTodayUsdg ? active.limits.dailyUsdg - spentTodayUsdg : 0n,
+      perTradeCapUsdg: active.limits.perTradeUsdg,
     };
 
     lastEquityUsdg = equityUsdg; // for chat-triggered trades between ticks
@@ -1159,6 +1164,25 @@ async function main() {
   // One shared persisted-state handle — the poll service and the notifier both
   // write telegram.json; separate copies would lose each other's writes.
   const tgState = createStateRef();
+
+  // Mint the /link code as soon as the worker starts, if a bot token is set —
+  // deliberately NOT gated on telegramEnabled. The poll loop used to be the only
+  // minter and it returns early when Telegram is switched off, so the dashboard
+  // could show a token as "connected" while the code stayed empty, with nothing
+  // the user could do about it. Now the code exists the moment merrymen runs, and
+  // it's waiting the instant they flip the toggle on.
+  //
+  // The WORKER stays the single writer of telegram.json (state.ts documents that
+  // invariant): the dashboard only ever reads it. Minting from the web app would
+  // add a second cross-process writer and could clobber ownerId — the ownership
+  // claim itself. Reported by @Victory-byte (PR #3); fixed on the worker side.
+  if (cfg.telegramBotToken) {
+    const before = tgState.get().linkCode;
+    tgState.set(ensureLinkCode(tgState.get(), cfg.telegramBotToken));
+    if (!before && tgState.get().linkCode) {
+      console.log(`[telegram] link code ready — send "/link ${tgState.get().linkCode}" to your bot to claim it`);
+    }
+  }
 
   startTelegram({
     // Resolve FRESH on every read: /link writes the allowlist to settings.json

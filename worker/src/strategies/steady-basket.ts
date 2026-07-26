@@ -62,11 +62,22 @@ export function steadyBasketTick(cfg: SteadyBasketConfig, snap: Snapshot): Trade
 
   const idleAfterBuys = snap.cashUsdg - (intents.length ? cfg.buyPerTickUsdg : 0n);
   if (idleAfterBuys > cfg.idleFloorUsdg) {
-    intents.push({
-      kind: "vault-deposit",
-      target: cfg.vault,
-      amountUsdg: idleAfterBuys - cfg.idleFloorUsdg,
-    });
+    const excess = idleAfterBuys - cfg.idleFloorUsdg;
+    // Size the sweep to what the wall will actually take. A deposit is capped at
+    // the DAILY limit (policy.ts), and this tick's buys have already eaten into
+    // today's budget — so proposing the whole excess on a small grant meant the
+    // deposit was rejected every single tick, forever, while the cash never moved.
+    // Sweep what fits now; the rest goes next tick. Nothing here loosens a cap:
+    // the proposal only ever shrinks.
+    const spentOnBuys = intents.reduce(
+      (sum, i) => sum + (i.kind === "swap" ? i.notionalUsdg : 0n),
+      0n,
+    );
+    const headroom = snap.spendHeadroomUsdg - spentOnBuys;
+    const amountUsdg = excess < headroom ? excess : headroom;
+    if (amountUsdg > 0n) {
+      intents.push({ kind: "vault-deposit", target: cfg.vault, amountUsdg });
+    }
   }
 
   return intents;

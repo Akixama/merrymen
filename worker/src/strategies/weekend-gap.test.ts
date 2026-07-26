@@ -34,6 +34,10 @@ function snap(over: Partial<Snapshot> = {}): Snapshot {
     pausedTokens: new Set<string>(),
     staleFeeds: new Set<string>(),
     sequencerUp: true,
+    // Wide open by default: these fixtures predate cap-aware sizing, so the
+    // headroom must not clamp them. Clamping is pinned in its own test.
+    spendHeadroomUsdg: 1_000_000_000_000n,
+    perTradeCapUsdg: 1_000_000_000_000n,
     ...over,
   };
 }

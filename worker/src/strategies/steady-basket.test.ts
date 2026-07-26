@@ -33,9 +33,73 @@ function snap(over: Partial<Snapshot> = {}): Snapshot {
     pausedTokens: new Set<string>(),
     staleFeeds: new Set<string>(),
     sequencerUp: true,
+    // Wide open by default: these fixtures predate cap-aware sizing, so the
+    // headroom must not clamp them. Clamping is pinned in its own test.
+    spendHeadroomUsdg: 1_000_000_000_000n,
+    perTradeCapUsdg: 1_000_000_000_000n,
     ...over,
   };
 }
+
+/**
+ * Regression: the vault sweep used to propose the WHOLE excess above the idle
+ * floor. On a small grant that is over the daily cap, so checkPolicy rejected it
+ * — and because the strategy is stateless, it re-proposed the identical
+ * oversized deposit every single tick, forever: a rejected trade row and a warn
+ * event each time, while the cash never actually reached the vault.
+ *
+ * The sweep is now sized to the headroom the wall will really accept. Reported
+ * by @zeeonchain (PR #4), fixed here by sizing to the live cap rather than a
+ * fixed constant, so it holds for every grant preset instead of just large ones.
+ */
+describe("steadyBasketTick — the vault sweep sizes itself to the policy wall", () => {
+  const SCOUT_DAILY = 50_000_000n; // the shipped "scout" preset: 50 USDG/day
+
+  it("clamps an oversized sweep to the remaining daily budget instead of proposing the lot", () => {
+    // 500 USDG cash, 50 floor → wants to sweep 450, but scout allows 50/day.
+    const intents = steadyBasketTick(
+      cfg({ buyPerTickUsdg: 20_000_000n }),
+      snap({ cashUsdg: 500_000_000n, spendHeadroomUsdg: SCOUT_DAILY }),
+    );
+    const deposit = intents.find((i) => i.kind === "vault-deposit");
+    assert.ok(deposit, "still sweeps — the cash isn't stranded");
+    assert.equal(deposit!.kind === "vault-deposit" && deposit!.amountUsdg, 30_000_000n,
+      "50 headroom minus the 20 already committed to this tick's buys");
+  });
+
+  it("accounts for the buys it proposed in the same tick — they spend the same budget", () => {
+    const intents = steadyBasketTick(
+      cfg({ buyPerTickUsdg: 20_000_000n }),
+      snap({ cashUsdg: 500_000_000n, spendHeadroomUsdg: 100_000_000n }),
+    );
+    const buys = intents.filter((i) => i.kind === "swap");
+    const deposit = intents.find((i) => i.kind === "vault-deposit");
+    const buyTotal = buys.reduce((s, i) => s + (i.kind === "swap" ? i.notionalUsdg : 0n), 0n);
+    assert.equal(buyTotal, 20_000_000n);
+    assert.equal(deposit!.kind === "vault-deposit" && deposit!.amountUsdg, 80_000_000n);
+    // The whole tick fits inside the budget — that's the point.
+    assert.ok(buyTotal + 80_000_000n <= 100_000_000n);
+  });
+
+  it("proposes NO deposit when the daily budget is already spent — silence beats a guaranteed rejection", () => {
+    const intents = steadyBasketTick(
+      cfg({ buyPerTickUsdg: 20_000_000n }),
+      snap({ cashUsdg: 500_000_000n, spendHeadroomUsdg: 20_000_000n }),
+    );
+    // The buys consume the last 20; nothing is left for the sweep this tick.
+    assert.equal(intents.some((i) => i.kind === "vault-deposit"), false);
+  });
+
+  it("leaves a sweep that already fits completely alone", () => {
+    const intents = steadyBasketTick(
+      cfg({ buyPerTickUsdg: 20_000_000n }),
+      snap({ cashUsdg: 100_000_000n, spendHeadroomUsdg: 500_000_000n }),
+    );
+    const deposit = intents.find((i) => i.kind === "vault-deposit");
+    // 100 cash − 20 buys − 50 floor = 30, well inside the budget: unchanged.
+    assert.equal(deposit!.kind === "vault-deposit" && deposit!.amountUsdg, 30_000_000n);
+  });
+});
 
 describe("steadyBasketTick", () => {
   it("emits nothing when the sequencer is down", () => {

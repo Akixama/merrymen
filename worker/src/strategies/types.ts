@@ -30,6 +30,20 @@ export interface Snapshot {
   /** Chainlink staleness per symbol; stale = underlying market closed (nights/weekends). */
   staleFeeds: Set<string>;
   sequencerUp: boolean;
+  /**
+   * USDG (6dp) still spendable today: the grant's daily cap minus what's already
+   * gone. Zero means the budget is used up.
+   *
+   * Strategies should SIZE to this instead of proposing what they wish for. The
+   * wall still rejects anything over — this just stops a strategy re-proposing an
+   * oversized intent every tick forever, which fills the ledger with rejections
+   * and stalls the position. It is a hint for sizing, never a permission: the
+   * proposer shrinks itself; checkPolicy and the on-chain caps remain the wall.
+   */
+  spendHeadroomUsdg: bigint;
+  /** The grant's per-trade cap (6dp) — the ceiling for a single swap. Deposits are
+   * capped at the DAILY limit instead (see policy.ts), hence the separate figure. */
+  perTradeCapUsdg: bigint;
 }
 
 export interface Strategy {
