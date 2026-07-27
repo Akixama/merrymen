@@ -405,6 +405,103 @@ describe("createPoolPriceReader — the depth floor survives the WETH hop", () =
   });
 });
 
+/**
+ * Route selection, calibrated against live Robinhood Chain pools (2026-07-27).
+ *
+ * Preferring "direct if it answers at all" reads as an optimisation and is a
+ * functional bug. On the real chain, VIRTUAL has a direct USDG pool holding $25
+ * and a WETH route with $4.6M behind it; ARROW's direct pool has a valid TWAP
+ * and ZERO in-range liquidity while its WETH pool is alive; CASHCAT's $32k
+ * direct pool preempts a $1.9M WETH route. Taking the first answer refused four
+ * perfectly good tokens and mispriced others off the thinner of two pools.
+ */
+describe("readRoutedPrice — the deeper route wins, not the first one", () => {
+  const WETH = (CASH.WETH as string).toLowerCase();
+  const USDG = (CASH.USDG as string).toLowerCase();
+  const DIRECT = "0x000000000000000000000000000000000000bb01" as const;
+  const CATE_WETH = "0x000000000000000000000000000000000000bb02" as const;
+  const WETH_USDG = "0x000000000000000000000000000000000000bb03" as const;
+  const Q96 = 2n ** 96n;
+
+  const sqrtX96 = (price: number, d0: number, d1: number) =>
+    BigInt(Math.round(Math.sqrt(price * 10 ** (d1 - d0)) * 2 ** 96));
+  const liquidityFor = (cashRaw: bigint, s: bigint) => (cashRaw * Q96) / s;
+  const cumulativesFor = (price: number, d0: number, d1: number, w = 900) =>
+    [0n, BigInt(Math.round(Math.log(price * 10 ** (d1 - d0)) / Math.log(1.0001)) * w)] as const;
+
+  const ETH_USD = 3000;
+  const CATE_USD = 0.0001;
+  const CATE_IN_WETH = CATE_USD / ETH_USD;
+  const SQRT_DIRECT = sqrtX96(CATE_USD, 18, 6);
+  const SQRT_CW = sqrtX96(CATE_IN_WETH, 18, 18);
+  const SQRT_WU = sqrtX96(ETH_USD, 18, 6);
+
+  /** Both routes live: `directUsdg` of direct depth vs `legWeth` behind the hop. */
+  const bothRoutes = (directUsdg: bigint, legWeth: bigint) =>
+    stubClient({
+      poolFor: (a, b, fee) => {
+        if (fee !== 3000) return null;
+        const pair = [a, b].sort().join("/");
+        if (pair === [CATE.address.toLowerCase(), USDG].sort().join("/")) return DIRECT;
+        if (pair === [CATE.address.toLowerCase(), WETH].sort().join("/")) return CATE_WETH;
+        if (pair === [WETH, USDG].sort().join("/")) return WETH_USDG;
+        return null;
+      },
+      cashInPool: (p) => (p === DIRECT ? directUsdg : p === CATE_WETH ? legWeth : usdgD(5_000_000)),
+      token0: (p) => (p === WETH_USDG ? (CASH.WETH as `0x${string}`) : CATE.address),
+      sqrtPriceX96: (p) => (p === DIRECT ? SQRT_DIRECT : p === CATE_WETH ? SQRT_CW : SQRT_WU),
+      liquidity: (p) =>
+        p === DIRECT
+          ? liquidityFor(directUsdg, SQRT_DIRECT)
+          : p === CATE_WETH
+            ? liquidityFor(legWeth, SQRT_CW)
+            : liquidityFor(usdgD(5_000_000), SQRT_WU),
+      tickCumulatives: (p) =>
+        p === DIRECT
+          ? cumulativesFor(CATE_USD, 18, 6)
+          : p === CATE_WETH
+            ? cumulativesFor(CATE_IN_WETH, 18, 18)
+            : cumulativesFor(ETH_USD, 18, 6),
+    });
+
+  const oneWeth = 10n ** 18n;
+  const read = async (directUsdg: bigint, legWeth: bigint) => {
+    const reader = createPoolPriceReader();
+    return reader.read({
+      client: bothRoutes(directUsdg, legWeth),
+      tokens: [CATE],
+      guard: { minLiquidityUsdg: usdgD(25_000), maxDivergenceBps: 500 },
+      nowSec: 1_000,
+    });
+  };
+
+  it("takes the WETH hop when the direct pool is a shell — VIRTUAL's live shape", async () => {
+    // $25 direct vs 100 WETH (~$300,000) one hop away.
+    const r = await read(usdgD(25), 100n * oneWeth);
+    assert.equal(r.quotes.has("CATE"), true, r.refused[0]?.reason ?? "refused a deep route");
+    assert.match(r.quotes.get("CATE")!.detail!, /via WETH/);
+  });
+
+  it("keeps the direct pool when IT is the deeper one", async () => {
+    const r = await read(usdgD(2_000_000), oneWeth / 10n);
+    assert.match(r.quotes.get("CATE")!.detail!, /USDG pool/);
+  });
+
+  it("agrees on the price whichever route it picks", async () => {
+    const viaWeth = await read(usdgD(25), 100n * oneWeth);
+    const viaDirect = await read(usdgD(2_000_000), oneWeth / 10n);
+    const a = Number(viaWeth.quotes.get("CATE")!.price8) / 1e8;
+    const b = Number(viaDirect.quotes.get("CATE")!.price8) / 1e8;
+    assert.ok(Math.abs(a - b) / b < 0.01, `routes disagree: $${a} vs $${b}`);
+  });
+
+  it("a dead direct pool no longer costs the token its price", async () => {
+    // Valid TWAP, zero in-range liquidity — exactly ARROW on the live chain.
+    const r = await read(0n, 100n * oneWeth);
+    assert.equal(r.quotes.has("CATE"), true, "the live WETH route must still be found");
+  });
+});
+
 describe("describeRoute", () => {
   it("says the window, the hop and the depth — the three things that decide trust", () => {
     const s = describeRoute(route({ route: "weth", liquidityUsdg: usdgD(12_345), twapWindowSec: 900 }));

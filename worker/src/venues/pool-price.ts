@@ -423,11 +423,20 @@ export interface RoutedPrice {
 }
 
 /**
- * Price one token in USD, routing through WETH when there's no direct cash pair.
+ * Price one token in USD by whichever route is DEEPER: the direct TOKEN/USDG
+ * pool, or TOKEN/WETH priced through WETH/USDG. Returns null when neither works.
  *
- * Tries the direct TOKEN/USDG pool first (stock tokens, PONS), then falls back
- * to TOKEN/WETH priced through WETH/USDG — which is how most of this chain's
- * memecoins actually trade. Returns null when neither route exists.
+ * WHY BOTH, ALWAYS. Preferring "direct if it produces any price at all" looks
+ * cheaper and is wrong, as live pools on this chain show plainly: ARROW has a
+ * USDG pool with a valid TWAP and ZERO in-range liquidity, and a WETH pool with
+ * real liquidity behind it. Take the direct route because it answered first and
+ * the token is refused as bottomless — while a perfectly usable route sits one
+ * hop away. CASHCAT is the milder version: a $32k direct pool preempts a ~$1.5M
+ * WETH route, and the token gets valued off the thinner of the two.
+ *
+ * Depth is the metric because depth is what bounds manipulation cost — the same
+ * reason the guard reads it. Two extra pool reads per token is nothing next to
+ * refusing tokens that are fine, and the caller's cache absorbs the cost.
  *
  * The caller still runs poolPriceUsable() on the result: routing finds a price,
  * it does not vouch for one.
@@ -450,44 +459,48 @@ export async function readRoutedPrice(
   // Same token on both sides would "price" WETH against itself.
   const isWeth = args.token.toLowerCase() === args.weth.toLowerCase();
 
-  const direct = await readPoolPrice(client, {
-    token: args.token,
-    tokenDecimals: args.tokenDecimals,
-    cash: args.cash,
-    cashDecimals: args.cashDecimals,
-    windowSec,
-  });
-  if (direct && direct.price8 > 0n) {
-    return {
-      price8: direct.price8,
-      spot8: direct.spot8,
-      route: "direct",
-      // Cash IS USDG here, so a whole unit is $1 — 1e8 at 8dp.
-      liquidityUsdg: cashRawToUsdg(direct.liquidityCashRaw, direct.cashDecimals, 100_000_000n),
-      divergenceBps: direct.divergenceBps,
-      twapWindowSec: windowSec,
-    };
-  }
-  if (isWeth) return null; // no direct WETH/USDG pool and nothing to hop through
-
-  // Two hops. Both legs are read in parallel — they're independent pools.
-  const [leg, wethLeg] = await Promise.all([
+  const [direct, leg, wethLeg] = await Promise.all([
     readPoolPrice(client, {
       token: args.token,
       tokenDecimals: args.tokenDecimals,
-      cash: args.weth,
-      cashDecimals: wethDecimals,
-      windowSec,
-    }),
-    readPoolPrice(client, {
-      token: args.weth,
-      tokenDecimals: wethDecimals,
       cash: args.cash,
       cashDecimals: args.cashDecimals,
       windowSec,
     }),
+    isWeth
+      ? Promise.resolve(null)
+      : readPoolPrice(client, {
+          token: args.token,
+          tokenDecimals: args.tokenDecimals,
+          cash: args.weth,
+          cashDecimals: wethDecimals,
+          windowSec,
+        }),
+    isWeth
+      ? Promise.resolve(null)
+      : readPoolPrice(client, {
+          token: args.weth,
+          tokenDecimals: wethDecimals,
+          cash: args.cash,
+          cashDecimals: args.cashDecimals,
+          windowSec,
+        }),
   ]);
-  if (!leg || !wethLeg || leg.price8 <= 0n || wethLeg.price8 <= 0n) return null;
+
+  const directRoute: RoutedPrice | null =
+    direct && direct.price8 > 0n
+      ? {
+          price8: direct.price8,
+          spot8: direct.spot8,
+          route: "direct",
+          // Cash IS USDG here, so a whole unit is $1 — 1e8 at 8dp.
+          liquidityUsdg: cashRawToUsdg(direct.liquidityCashRaw, direct.cashDecimals, 100_000_000n),
+          divergenceBps: direct.divergenceBps,
+          twapWindowSec: windowSec,
+        }
+      : null;
+
+  if (!leg || !wethLeg || leg.price8 <= 0n || wethLeg.price8 <= 0n) return directRoute;
 
   // The TOKEN/WETH pool's depth is denominated in WETH — 18 raw decimals, and
   // each whole WETH is worth wethLeg.price8. Converting it explicitly through
@@ -497,7 +510,7 @@ export async function readRoutedPrice(
   const legDepthUsdg = cashRawToUsdg(leg.liquidityCashRaw, leg.cashDecimals, wethLeg.price8);
   const wethDepthUsdg = cashRawToUsdg(wethLeg.liquidityCashRaw, wethLeg.cashDecimals, 100_000_000n);
 
-  return {
+  const wethRoute: RoutedPrice = {
     // The token leg combines at 18dp; anything less quantizes a sub-cent
     // memecoin's WETH price into single-digit integers.
     price8: combineLegs(leg.price18, wethLeg.price8),
@@ -509,4 +522,8 @@ export async function readRoutedPrice(
     divergenceBps: Math.max(leg.divergenceBps, wethLeg.divergenceBps),
     twapWindowSec: windowSec,
   };
+  if (wethRoute.price8 <= 0n) return directRoute;
+  if (!directRoute) return wethRoute;
+  // Deeper wins. Ties go to direct — one hop, one pool to reason about.
+  return wethRoute.liquidityUsdg > directRoute.liquidityUsdg ? wethRoute : directRoute;
 }
