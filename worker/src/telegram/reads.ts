@@ -95,13 +95,31 @@ export function readPositions(): string {
   if (!db) return "no ledger yet — the band hasn't ridden.";
   try {
     const rows = db
-      .prepare("SELECT symbol, value_usdg, price_usd, price_stale FROM positions ORDER BY value_usdg DESC")
-      .all() as { symbol: string; value_usdg: number; price_usd: number; price_stale: number }[];
+      .prepare(
+        "SELECT symbol, value_usdg, price_usd, price_stale, price_source FROM positions ORDER BY value_usdg DESC",
+      )
+      .all() as {
+      symbol: string;
+      value_usdg: number;
+      price_usd: number;
+      price_stale: number;
+      price_source: string;
+    }[];
     if (!rows.length) return "📖 no open positions — all in cash/vault.";
     const body = rows
-      .map((r) => `• ${esc(r.symbol)}: $${r.value_usdg.toFixed(2)}${r.price_stale ? " (px 24/5)" : ""} @ $${r.price_usd.toFixed(2)}`)
+      .map((r) => {
+        // A pool-priced holding is a weaker claim than a Chainlink-priced one.
+        // Marking it inline means the owner never has to remember which is which.
+        const src = r.price_source === "pool" ? " (pool px)" : "";
+        const stale = r.price_stale ? " (px 24/5)" : "";
+        return `• ${esc(r.symbol)}: $${r.value_usdg.toFixed(2)}${stale}${src} @ $${r.price_usd.toFixed(2)}`;
+      })
       .join("\n");
-    return `📖 <b>positions</b>\n${body}`;
+    const anyPool = rows.some((r) => r.price_source === "pool");
+    const note = anyPool
+      ? "\n<i>pool px = a Uniswap time-averaged price, not a Chainlink feed — it passed the depth and divergence checks, but it's a thinner claim.</i>"
+      : "";
+    return `📖 <b>positions</b>\n${body}${note}`;
   } catch {
     return "📖 no positions yet.";
   } finally {

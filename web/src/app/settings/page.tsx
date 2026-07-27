@@ -438,6 +438,35 @@ export default function SettingsPage() {
             add token
           </button>
           {tokenError && <div className="grant-note err">{tokenError}</div>}
+
+          {/* The two knobs that decide whether a token gets a price at all. They
+              live here, next to the tokens they govern, because the refusal
+              message names them by value ("below your $25,000 floor") and an
+              owner who can't find the dial can't act on that. */}
+          <div className="grant-fields settings-grid" style={{ marginTop: 12 }}>
+            <Field
+              label="minimum pool depth (USD)"
+              hint={`Refuse to price a token whose deepest route is thinner than this. Default ${d.minPoolLiquidityUsdg.toLocaleString()}. Lower it and you're accepting a price someone can push for pocket change — and that price feeds your equity and your drawdown breaker.`}
+            >
+              <input
+                value={v("minPoolLiquidityUsdg")}
+                inputMode="numeric"
+                placeholder={String(d.minPoolLiquidityUsdg)}
+                onChange={set("minPoolLiquidityUsdg")}
+              />
+            </Field>
+            <Field
+              label="max spot-vs-average gap (bps)"
+              hint={`Refuse a price when the current pool price has run this far from its time-average — the signature of a pool being pushed right now. Default ${d.maxPriceDivergenceBps} (${d.maxPriceDivergenceBps / 100}%).`}
+            >
+              <input
+                value={v("maxPriceDivergenceBps")}
+                inputMode="numeric"
+                placeholder={String(d.maxPriceDivergenceBps)}
+                onChange={set("maxPriceDivergenceBps")}
+              />
+            </Field>
+          </div>
           <div className="grant-note">
             Paste the contract address from the explorer — merrymen prices these from the Uniswap
             pool (a time-averaged price, and only when the pool is deep enough to trust), never from

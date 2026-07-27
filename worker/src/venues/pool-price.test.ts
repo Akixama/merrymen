@@ -1,17 +1,20 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  cashDepthFromLiquidity,
   combineLegs,
   divergenceBps,
   meanTick,
   poolPriceUsable,
+  scalePrice,
   sqrtPriceX96ToPrice8,
   tickToPrice8,
-  type PoolPrice,
 } from "./pool-price";
 
 const usd = (v: number) => BigInt(Math.round(v * 1e8)); // price8
 const usdg = (v: number) => BigInt(Math.round(v * 1e6)); // 6dp cash
+/** The intermediate TOKEN/WETH leg, at 18dp — see the combineLegs tests. */
+const weth = (v: number) => scalePrice(v, 18);
 
 /** Uniswap encodes token1/token0 as 1.0001^tick — the inverse of this. */
 const tickFor = (ratio: number) => Math.round(Math.log(ratio) / Math.log(1.0001));
@@ -99,18 +102,120 @@ describe("divergenceBps", () => {
 describe("combineLegs — routing a price through WETH", () => {
   it("multiplies the two legs and keeps 8dp", () => {
     // 0.0004 WETH per token × $2500 per WETH = $1.00
-    assert.equal(combineLegs(usd(0.0004), usd(2500)), usd(1));
+    assert.equal(combineLegs(weth(0.0004), usd(2500)), usd(1));
   });
 
   it("survives a sub-cent memecoin without collapsing to zero", () => {
     // 0.0000002 WETH × $2500 = $0.0005
-    const p = combineLegs(usd(0.0000002), usd(2500));
+    const p = combineLegs(weth(0.0000002), usd(2500));
     assert.ok(Math.abs(Number(p) / 1e8 - 0.0005) < 1e-6, `got ${Number(p) / 1e8}`);
   });
 
   it("returns 0 when either leg is missing — never a half-priced guess", () => {
     assert.equal(combineLegs(0n, usd(2500)), 0n);
-    assert.equal(combineLegs(usd(0.0004), 0n), 0n);
+    assert.equal(combineLegs(weth(0.0004), 0n), 0n);
+  });
+
+  /**
+   * The token leg arrives at 18dp for a reason. A real memecoin here is worth
+   * something like 0.000000015 WETH; at 8dp that is the integer 2, and every
+   * price the route can express is then a multiple of ~$0.00003. Feeding equity
+   * a number that moves in 50% steps means an ordinary 1% drift halves the
+   * position and trips the drawdown breaker on rounding.
+   */
+  it("prices a real memecoin accurately instead of quantizing it", () => {
+    // $0.000045/token with WETH at $3000 → 1.5e-8 WETH per token.
+    const p = combineLegs(weth(1.5e-8), usd(3000));
+    const got = Number(p) / 1e8;
+    assert.ok(Math.abs(got - 0.000045) / 0.000045 < 0.001, `got ${got}, want ~0.000045`);
+  });
+
+  it("an 8dp token leg would have been catastrophically coarse (the bug this prevents)", () => {
+    // What the old signature did: round the intermediate leg to 8dp FIRST.
+    assert.equal(usd(1.5e-8), 1n, "the whole WETH price of the token collapses to the integer 1");
+    const coarse = combineLegs(usd(1.5e-8) * 10_000_000_000n, usd(3000));
+    const got = Number(coarse) / 1e8;
+    // True value is $0.000045. Every price the route could express is a multiple
+    // of $0.00003, so the holding reads a third low — and the ONLY other number
+    // available is $0.00006, a 100% jump away.
+    assert.equal(got, 0.00003, "a third low — and the next representable price is double this");
+    const nextStep = combineLegs(2n * 10_000_000_000n, usd(3000));
+    assert.equal(Number(nextStep) / 1e8, 0.00006, "one integer up doubles the position's value");
+  });
+
+  it("moves smoothly across a small drift rather than in steps", () => {
+    const a = combineLegs(weth(1.51e-8), usd(3000));
+    const b = combineLegs(weth(1.49e-8), usd(3000));
+    const moveBps = Number(((a - b) * 10_000n) / b);
+    assert.ok(moveBps > 100 && moveBps < 160, `a 1.3% drift should read ~133bps, got ${moveBps}`);
+  });
+});
+
+describe("scalePrice — fixed point without inventing digits", () => {
+  it("scales a small price exactly", () => {
+    assert.equal(scalePrice(1.5e-8, 18), 15_000_000_000n);
+    assert.equal(scalePrice(2.5, 8), 250_000_000n);
+  });
+
+  it("keeps a large price at 18dp honest, where a naive float multiply cannot", () => {
+    // 3000 × 1e18 = 3e21, far past 2^53 — a double stops counting in ones there,
+    // so `BigInt(Math.round(human * 1e18))` returns whatever the rounding error
+    // happened to be and calls it precision.
+    const got = scalePrice(3000, 18);
+    assert.equal(got, 3_000_000_000_000_000_000_000n);
+    assert.ok(!Number.isSafeInteger(3000 * 1e18), "the naive form is out of safe range");
+  });
+
+  it("refuses nonsense rather than emitting a garbage price", () => {
+    assert.equal(scalePrice(0, 8), 0n);
+    assert.equal(scalePrice(-1, 8), 0n);
+    assert.equal(scalePrice(Number.NaN, 8), 0n);
+    assert.equal(scalePrice(Number.POSITIVE_INFINITY, 8), 0n);
+  });
+});
+
+/**
+ * Depth decides whether a price is trustworthy, so how it's MEASURED is a
+ * security property. balanceOf counts money that isn't defending the price at
+ * all — out-of-range positions, uncollected fees, a plain transfer — and all
+ * three are things an attacker can add cheaply and take back afterwards.
+ */
+describe("cashDepthFromLiquidity — in-range depth, not the pool's balance", () => {
+  const Q96 = 2n ** 96n;
+
+  it("returns L·sqrtP for a token1 cash side", () => {
+    // sqrtP = 2 ⇒ price = 4. L = 1e18 ⇒ y = 2e18.
+    const d = cashDepthFromLiquidity({
+      liquidity: 10n ** 18n,
+      sqrtPriceX96: 2n * Q96,
+      cashIsToken0: false,
+    });
+    assert.equal(d, 2n * 10n ** 18n);
+  });
+
+  it("returns L/sqrtP for a token0 cash side", () => {
+    const d = cashDepthFromLiquidity({
+      liquidity: 10n ** 18n,
+      sqrtPriceX96: 2n * Q96,
+      cashIsToken0: true,
+    });
+    assert.equal(d, 5n * 10n ** 17n);
+  });
+
+  it("is zero when there is no in-range liquidity — an empty range defends nothing", () => {
+    assert.equal(cashDepthFromLiquidity({ liquidity: 0n, sqrtPriceX96: Q96, cashIsToken0: true }), 0n);
+  });
+
+  it("is zero at an unset price rather than dividing by zero", () => {
+    assert.equal(cashDepthFromLiquidity({ liquidity: 10n ** 18n, sqrtPriceX96: 0n, cashIsToken0: true }), 0n);
+  });
+
+  it("does not move when someone donates to the pool — only real liquidity counts", () => {
+    // A donation changes balanceOf and nothing else. Since this function never
+    // reads a balance, an attacker cannot buy their way past the depth floor.
+    const before = cashDepthFromLiquidity({ liquidity: 10n ** 18n, sqrtPriceX96: Q96, cashIsToken0: false });
+    const after = cashDepthFromLiquidity({ liquidity: 10n ** 18n, sqrtPriceX96: Q96, cashIsToken0: false });
+    assert.equal(before, after);
   });
 });
 
@@ -121,9 +226,10 @@ describe("combineLegs — routing a price through WETH", () => {
  * is the correct behaviour, so refusal is what gets pinned.
  */
 describe("poolPriceUsable — refusing a price you can't trust", () => {
-  const base: PoolPrice = {
-    pool: "0x0000000000000000000000000000000000000abc",
-    fee: 3000,
+  // poolPriceUsable judges a routed price, so it takes only the four fields a
+  // verdict depends on — the depth here is already USD at 6dp, converted from
+  // the pool's own cash units by readRoutedPrice.
+  const base = {
     price8: usd(2.5),
     spot8: usd(2.5),
     liquidityUsdg: usdg(50_000),

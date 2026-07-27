@@ -45,6 +45,7 @@ import {
   robinhoodTestnet,
   tokenCoverage,
   type CircleTier,
+  type PriceQuote,
   type StockToken,
   type StoredGrant,
 } from "../../packages/core/src/index";
@@ -65,7 +66,8 @@ import {
   strategyKey,
   type ResolvedConfig,
 } from "./settings";
-import { BUILTIN_STRATEGIES, buildStrategy, isCircleStrategy, tokensForSymbols } from "./strategies/registry";
+import { BUILTIN_STRATEGIES, buildStrategy, isCircleStrategy, watchTokensFor } from "./strategies/registry";
+import { createPoolPriceReader } from "./venues/pool-prices";
 import { customStrategiesDir, resolveStrategyFile } from "./strategies/custom";
 import type { Holding, Snapshot, Strategy } from "./strategies/types";
 import { isPaused, startTelegram } from "./telegram/service";
@@ -75,7 +77,7 @@ import { createStateRef, ensureLinkCode } from "./telegram/state";
 import { readPositionRaw } from "./telegram/reads";
 import { ensureSoul, getName } from "./soul";
 import { readPositions, type Position } from "./positions";
-import { readAccountBalances, readMarketSafety, setMainnetRpc } from "./snapshot";
+import { mainnetClient, readAccountBalances, readMarketSafety, setMainnetRpc } from "./snapshot";
 import { applyFill } from "./basis";
 import {
   addDecision,
@@ -174,16 +176,18 @@ async function main() {
   setMainnetRpc(cfg.rpcMainnet);
   let connKey = connectionKey(cfg);
   let stratKey = strategyKey(cfg);
-  let watchTokens = tokensForSymbols(cfg.basketSymbols);
+  let watchTokens = watchTokensFor(cfg.basketSymbols, cfg.customTokens);
 
   // ── paper trading plumbing ────────────────────────────────────────────
   // Paper mode = a grant but no signer: fills simulate at live oracle prices.
-  let lastPrices: Map<string, { price8: bigint; stale: boolean }> = new Map();
+  let lastPrices: Map<string, PriceQuote> = new Map();
   const paperActive = () => !!active && !active.executor && cfg.paperTradingEnabled;
-  function paperPriceOf(token: `0x${string}`): { priceUsd: number; stale: boolean } | null {
+  function paperPriceOf(
+    token: `0x${string}`,
+  ): { priceUsd: number; stale: boolean; source: PriceQuote["source"] } | null {
     const t = watchTokens.find((w) => w.address.toLowerCase() === token.toLowerCase());
     const p = t ? lastPrices.get(t.symbol) : undefined;
-    return p ? { priceUsd: Number(p.price8) / 1e8, stale: p.stale } : null;
+    return p ? { priceUsd: Number(p.price8) / 1e8, stale: p.stale, source: p.source } : null;
   }
   const paperSymbolOf = (token: `0x${string}`) =>
     watchTokens.find((w) => w.address.toLowerCase() === token.toLowerCase())?.symbol ?? null;
@@ -222,6 +226,9 @@ async function main() {
     if (nextConn !== connKey) {
       console.log("[settings] connection settings changed — re-arming");
       setMainnetRpc(next.rpcMainnet);
+      // Cached routes were read through the OLD endpoint. Keeping them would
+      // serve one chain's prices while pointed at another.
+      poolPrices.reset();
       if (active) {
         await addEvent(active.agentId, "ok", "connection settings changed — re-arming executor");
         active = null; // syncGrant re-arms with the new bundler/RPC this tick
@@ -231,7 +238,7 @@ async function main() {
     if (nextStrat !== stratKey) {
       cfg = next; // makeStrategy reads the new values
       strategy = makeStrategy(next);
-      watchTokens = tokensForSymbols(next.basketSymbols);
+      watchTokens = watchTokensFor(next.basketSymbols, next.customTokens);
       console.log(`[settings] strategy settings applied — ${strategy.name}, venue ${next.swapVenue}`);
       if (active) {
         active.limits = limitsFromGrant(active.grant, watchTokens);
@@ -258,8 +265,85 @@ async function main() {
   // every tick forever. Resets when the book is valuable again.
   let notedUnpriced = false;
   let lastEquityUsdg = 0n; // updated each tick; used by chat-triggered trades
+  // Whether that figure is the WHOLE book. False while a held asset can't be
+  // valued — the total is then a partial sum, and judging a drawdown on it would
+  // read the missing asset as a loss and refuse the very sell that clears it.
+  let lastEquityKnown = true;
   let lastGasWei = 0n; // updated each tick; feeds the low-gas Telegram alert
   let notifierHandle: ReturnType<typeof startNotifier> | null = null;
+
+  // Uniswap TWAPs for tokens with no Chainlink feed. Cached across ticks — the
+  // window is 15 minutes, so re-reading three pools every 15 seconds buys
+  // nothing and costs a great deal of RPC.
+  const poolPrices = createPoolPriceReader();
+  // Feedless tokens the guard REFUSED, symbol → reason. Reported when the set
+  // changes rather than every tick, and reused to explain why the book can't be
+  // valued instead of the useless "has no price feed".
+  let poolRefusals = new Map<string, string>();
+  let lastRefusalKey: string | null = null;
+
+  /**
+   * Price the feedless part of the watch set from Uniswap and merge it into the
+   * tick's price map.
+   *
+   * This is what makes a memecoin a real holding rather than a hole in the book,
+   * and it is deliberately the ONLY place a non-Chainlink price enters the
+   * system. Every quote it returns has already passed the depth floor and the
+   * spot-vs-TWAP divergence band; anything that didn't comes back as a refusal
+   * with a reason, and stays unpriced. Refusing is the safe outcome — equity and
+   * the drawdown breaker read these numbers.
+   */
+  async function mergePoolPrices(prices: Map<string, PriceQuote>, agentId: string): Promise<void> {
+    // Memecoins only, not merely "feedless". A Stock Token whose feed hasn't
+    // been published yet (BE today) is still ERC-8056: its value scales with
+    // uiMultiplier, while a pool quotes the whole-token price that already
+    // includes any split. Pricing one from a pool would need that difference
+    // handled everywhere it flows, so it simply isn't offered — such a token
+    // stays honestly unvalued until Chainlink lists it.
+    const feedless = watchTokens.filter((t) => t.chainlinkFeed === null && t.kind === "memecoin");
+    if (!feedless.length) {
+      poolRefusals = new Map();
+      lastRefusalKey = null;
+      return;
+    }
+    const { quotes, refused } = await poolPrices.read({
+      // Pools live on MAINNET, like the feeds — a testnet grant still values its
+      // book against the real market rather than against nothing.
+      client: mainnetClient(),
+      tokens: feedless,
+      guard: {
+        minLiquidityUsdg: usdg(cfg.minPoolLiquidityUsdg),
+        maxDivergenceBps: cfg.maxPriceDivergenceBps,
+      },
+      nowSec: Math.floor(Date.now() / 1000),
+    });
+    // Chainlink is never overwritten: a feedless token is one with no feed, so
+    // these keys can't collide — but merging in this direction makes that
+    // explicit rather than incidental.
+    for (const [symbol, quote] of quotes) if (!prices.has(symbol)) prices.set(symbol, quote);
+
+    poolRefusals = new Map(refused.map((r) => [r.symbol, r.reason]));
+    // Key on the refusal KIND, never the prose. The reasons embed a live pool
+    // balance and a divergence percentage, so a key built from them changes
+    // every time anyone trades — and "tell the owner when this changes" would
+    // become a warn row every tick, forever, burying the warnings that matter.
+    const key = refused
+      .map((r) => `${r.symbol}:${r.kind}`)
+      .sort()
+      .join("|");
+    if (key === lastRefusalKey) return;
+    lastRefusalKey = key;
+    if (!refused.length) return;
+    const lines = refused.map((r) => `${r.symbol} (${r.reason})`).join("; ");
+    console.log(`[price] refusing to value ${lines}`);
+    await addEvent(
+      agentId,
+      "warn",
+      `won't put a price on ${lines}. A price off a pool that shallow can be moved by ` +
+        `whoever wants to move it, and it would feed your equity and drawdown breaker — ` +
+        `so it stays unpriced rather than wrong.`,
+    );
+  }
 
   /**
    * Tokens the owner listed in settings that the CURRENT signature can't
@@ -479,7 +563,11 @@ async function main() {
     };
   }
 
-  async function processIntent(intent: TradeIntent, equityUsdg: bigint): Promise<void> {
+  async function processIntent(
+    intent: TradeIntent,
+    equityUsdg: bigint,
+    equityKnown = true,
+  ): Promise<void> {
     if (!active) return;
     const { agentId, limits, executor } = active;
     const decision_id = intent.decisionId;
@@ -491,6 +579,7 @@ async function main() {
       opsToday,
       highWaterMarkUsdg,
       equityUsdg,
+      equityKnown,
       nowSec: Math.floor(Date.now() / 1000),
     };
     const verdict = checkPolicy(intent, limits, state);
@@ -883,6 +972,10 @@ async function main() {
       return;
     }
 
+    // Pool TWAPs for the feedless tokens land BEFORE anything reads a price, so
+    // positions, equity, paper fills and the strategy all see the same map.
+    await mergePoolPrices(market.prices, agentId);
+
     // Feed prices land BEFORE the book read so paper valuation uses this tick's px.
     lastPrices = market.prices;
 
@@ -913,8 +1006,13 @@ async function main() {
           token: p.token,
           rawBalance: BigInt(Math.round(p.shares * 1e18)),
           uiMultiplier: 10n ** 18n,
+          // The paper book stores whole shares, so its synthetic raw balance is
+          // normalised to 18dp regardless of the real token's decimals. This
+          // labels the number that's actually here, not the on-chain convention.
+          decimals: 18,
           price8: BigInt(Math.round(px.priceUsd * 1e8)),
           priceStale: px.stale,
+          priceSource: px.source,
           valueUsdg: usdg(p.shares * px.priceUsd),
         });
       }
@@ -952,11 +1050,17 @@ async function main() {
     const bookIncomplete = unpricedByDesign.length > 0;
     if (bookIncomplete && !notedUnpriced) {
       notedUnpriced = true; // once per run, not once per tick — this never clears
-      console.log(`[tick] held ${unpricedByDesign.join(",")} has no price feed — trading continues, equity/breaker paused while held`);
+      // Say WHY. "No price feed" was true but useless once pool pricing exists:
+      // the owner needs to know whether the pool is too thin, being pushed right
+      // now, or simply absent — those have different answers.
+      const why = unpricedByDesign
+        .map((s) => `${s} (${poolRefusals.get(s) ?? "no Chainlink feed and no usable pool"})`)
+        .join(", ");
+      console.log(`[tick] held ${why} — trading continues, equity/breaker paused while held`);
       await addEvent(
         agentId,
         "warn",
-        `held ${unpricedByDesign.join(", ")} has no price feed, so the book can't be valued — trading stays OPEN (you can still sell), but equity, P&L and the drawdown breaker are paused until it's out of the book`,
+        `held ${why} — can't be valued, so the book can't be totalled. Trading stays OPEN (you can still sell), but equity, P&L and the drawdown breaker are paused until it's out of the book`,
       );
     }
     if (!bookIncomplete) notedUnpriced = false;
@@ -1080,6 +1184,7 @@ async function main() {
         uiMultiplier: p.uiMultiplier,
         priceUsd: Number(p.price8) / 1e8,
         priceStale: p.priceStale,
+        priceSource: p.priceSource,
         valueUsdg: usdgNum(p.valueUsdg),
       })),
     );
@@ -1132,6 +1237,7 @@ async function main() {
     };
 
     lastEquityUsdg = equityUsdg; // for chat-triggered trades between ticks
+    lastEquityKnown = !bookIncomplete;
     lastGasWei = balances.ethWei;
     // Fresh feed prices → the notifier's price alerts (evaluated off-tick).
     notifierHandle?.publishPrices(market.prices);
@@ -1159,7 +1265,10 @@ async function main() {
       // The LLM strategist already journaled + stamped its survivors; this covers
       // deterministic strategies so every trade still links to a decision.
       await ensureDecision(intent, `strategy:${strategy.name}`);
-      await processIntent(intent, equityUsdg);
+      // equityUsdg excludes anything we couldn't value, so when the book is
+      // incomplete it is a partial sum — say so, or the drawdown rule reads the
+      // gap as a loss and rejects every intent including the exit.
+      await processIntent(intent, equityUsdg, !bookIncomplete);
     }
   }
 
@@ -1200,7 +1309,7 @@ async function main() {
       intent = { kind: "swap", target: router, sellToken: token, buyToken: CASH.USDG as `0x${string}`, sellAmountRaw: sellRaw, notionalUsdg: notional };
     }
     await ensureDecision(intent, "chat", `owner asked to ${side} ${usdgAmount} USDG ${symbol} in chat`);
-    await processIntent(intent, lastEquityUsdg);
+    await processIntent(intent, lastEquityUsdg, lastEquityKnown);
     return `🏹 submitted ${side} ${usdgAmount} USDG ${symbol} — watch /trades for the result (it still passes the policy wall).`;
   }
 
@@ -1220,7 +1329,7 @@ async function main() {
       amountUsdg: usdg(usdgAmount),
     };
     await ensureDecision(intent, "chat", `owner asked to transfer ${usdgAmount} USDG to ${to} in chat`);
-    await processIntent(intent, lastEquityUsdg);
+    await processIntent(intent, lastEquityUsdg, lastEquityKnown);
     return `📤 transfer submitted — ${usdgAmount} USDG to ${to.slice(0, 6)}…${to.slice(-4)}. Watch /trades for the result (it still passes the policy wall).`;
   }
 

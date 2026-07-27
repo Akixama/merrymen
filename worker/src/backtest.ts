@@ -124,7 +124,12 @@ export async function runBacktest(cfg: BacktestConfig, bars: readonly Bar[]): Pr
       vaultUsdg: vault,
       holdings,
       prices: new Map(
-        [...bar.prices.entries()].map(([s, p]) => [s, { price8: p, stale: stale.has(s) }]),
+        // Historical bars are feed history, so "chainlink" is the honest label —
+        // a backtest must not present replayed data as something it wasn't.
+        [...bar.prices.entries()].map(([s, p]) => [
+          s,
+          { price8: p, stale: stale.has(s), source: "chainlink" as const },
+        ]),
       ),
       pausedTokens: new Set(),
       staleFeeds: stale,

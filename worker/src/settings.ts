@@ -339,6 +339,10 @@ export function strategyKey(cfg: ResolvedConfig): string {
     cfg.strategy,
     cfg.swapVenue,
     cfg.basketSymbols.join(","),
+    // Owner-added tokens are part of the watch set, so a change here has to
+    // rebuild it — otherwise a token added mid-run is never read or priced until
+    // the next restart, and the owner sees nothing happen.
+    cfg.customTokens.map((t) => `${t.symbol}:${t.address.toLowerCase()}:${t.decimals}`).join(","),
     cfg.buyPerTickUsdg,
     cfg.idleFloorUsdg,
     cfg.gapEnterBudgetUsdg,

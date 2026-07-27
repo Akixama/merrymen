@@ -333,9 +333,30 @@ the verified registry (`ctx.tokenBySymbol.QQQ`, `ctx.CASH.USDG`,
 
 The built-in registry is the issuer-backed stock tokens — curated, Chainlink-priced.
 Anything else on Robinhood Chain you add yourself in `/settings`: paste the symbol,
-the contract address, and its decimals. These are priced from the Uniswap pool
-(time-averaged, with a depth floor and a divergence band against spot), never from
-a feed — and a pool too thin to trust is refused rather than guessed at.
+the contract address, and its decimals.
+
+**How they're priced.** There's no Chainlink feed for a memecoin, so merrymen reads
+the Uniswap v3 pool — but a spot price on a thin pool is worth nothing: anyone with
+moderate capital can push it for a block, and that number would feed your equity,
+your P&L and your drawdown breaker. So:
+
+- **Valuation uses a 15-minute TWAP**, not spot. Moving it means holding the price
+  away from the market for the whole window and eating the arbitrage.
+- **Two guards, both yours to set.** A minimum pool depth (default $25,000) and a
+  maximum spot-vs-average gap (default 5%). Live pools on this chain run from ~$3k
+  to ~$1.2M, so the default admits the deep end and refuses the rest.
+- **A refusal is the feature.** When a pool is too thin or is being pushed right
+  now, the token stays *unpriced* and merrymen says why. Your agent keeps trading
+  — you can always sell out — but equity, P&L and the breaker pause rather than
+  running on a number nobody should trust.
+- **Most memecoins here price through WETH.** About three quarters of the chain's
+  pools quote against WETH rather than USDG, so the route is usually two hops. Its
+  depth is the *shallower* leg — a deep WETH/USDG pool doesn't make a $3k memecoin
+  pool safe.
+
+Anything valued this way is marked **pool px** in the dashboard and in `/status`,
+because it isn't the same quality of claim as a Chainlink feed and shouldn't look
+like one.
 
 **Adding a token doesn't make it tradable.** The list of tokens your agent may
 approve is baked into the session key you signed, so widening it takes a

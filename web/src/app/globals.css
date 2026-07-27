@@ -293,6 +293,10 @@ button { font: inherit; cursor: pointer; }
 }
 .token-row .token-addr { color: var(--text-dim); word-break: break-all; flex: 1 1 240px; }
 .token-row .token-dec { color: var(--text-faint); }
+
+/* Pool-priced holdings. Deliberately a different colour from the rest of the
+   dim text — the point is that it's a different KIND of number. */
+.px-pool { color: var(--amber, #d19a3a); cursor: help; }
 .settings-panel select {
   width: 100%; background: var(--bg-2); color: var(--text);
   border: none; outline: none; font-family: var(--mono); font-size: 13px;

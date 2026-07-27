@@ -11,6 +11,7 @@ const USDG = "0x3333333333333333333333333333333333333333" as const;
 
 const U = (n: number) => BigInt(Math.round(n * 1e6)); // USDG 6dp
 const P = (n: number) => BigInt(Math.round(n * 1e8)); // Chainlink 8dp
+const Q = (n: number) => ({ price8: P(n), stale: false, source: "chainlink" as const });
 
 function snap(over: Partial<Snapshot> = {}): Snapshot {
   return {
@@ -18,8 +19,8 @@ function snap(over: Partial<Snapshot> = {}): Snapshot {
     vaultUsdg: 0n,
     holdings: new Map<string, Holding>(),
     prices: new Map([
-      ["AAPL", { price8: P(100), stale: false }],
-      ["MSFT", { price8: P(100), stale: false }],
+      ["AAPL", Q(100)],
+      ["MSFT", Q(100)],
     ]),
     pausedTokens: new Set<string>(),
     staleFeeds: new Set<string>(),
@@ -92,8 +93,8 @@ describe("dip-hunter", () => {
     const out = await s.tick(
       snap({
         prices: new Map([
-          ["AAPL", { price8: P(95), stale: false }],
-          ["MSFT", { price8: P(100), stale: false }],
+          ["AAPL", Q(95)],
+          ["MSFT", Q(100)],
         ]),
       }),
     );

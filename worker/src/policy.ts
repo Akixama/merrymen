@@ -71,6 +71,18 @@ export interface AgentState {
   opsToday: number;
   highWaterMarkUsdg: bigint;
   equityUsdg: bigint;
+  /**
+   * Is `equityUsdg` the WHOLE book? False when a held asset couldn't be valued
+   * this tick, in which case the figure is a partial sum — lower than reality,
+   * not equal to it.
+   *
+   * The drawdown rule must not run on a partial total. Doing so reads the
+   * missing asset as a loss and rejects every intent, INCLUDING the sell that
+   * would clear the position — the agent locks itself in precisely when the
+   * owner most needs it to act. Absent = true, so existing callers keep today's
+   * behaviour; only a caller that KNOWS the book is short passes false.
+   */
+  equityKnown?: boolean;
   nowSec: number;
 }
 
@@ -133,7 +145,10 @@ export function checkPolicy(intent: TradeIntent, limits: AgentLimits, state: Age
     }
   }
 
-  if (state.highWaterMarkUsdg > 0n) {
+  // Unknown equity is not low equity. Every other rule above still applies —
+  // caps, allowlists, expiry, budgets — but a drawdown can only be measured
+  // against a book we can actually total.
+  if (state.highWaterMarkUsdg > 0n && state.equityKnown !== false) {
     const drawdownBps = Number(
       ((state.highWaterMarkUsdg - state.equityUsdg) * 10_000n) / state.highWaterMarkUsdg,
     );

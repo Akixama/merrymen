@@ -14,6 +14,7 @@ import {
   STOCK_ABI,
   STOCK_TOKENS,
   robinhoodChain,
+  type PriceQuote,
 } from "../../packages/core/src/index";
 
 const ERC20_READS = parseAbi([
@@ -31,12 +32,26 @@ export function setMainnetRpc(url?: string): void {
   mainnet = createPublicClient({ chain: robinhoodChain, transport: http(url) });
 }
 
+/**
+ * The mainnet client, for reads that must hit mainnet regardless of which chain
+ * the grant was issued on — Chainlink feeds and Uniswap pools both live there.
+ * Exposed so pool pricing shares this client (and its RPC setting) rather than
+ * quietly opening a second connection to a different endpoint.
+ */
+export function mainnetClient(): PublicClient {
+  return mainnet as PublicClient;
+}
+
 export interface MarketSafety {
   pausedTokens: Set<string>;
   /** Symbols whose Chainlink feed is >2h old (expected on weekends — 24/5 feeds). */
   staleFeeds: Set<string>;
-  /** Latest Chainlink USD price per symbol (8dp), stale or not — for valuation. */
-  prices: Map<string, { price8: bigint; stale: boolean }>;
+  /**
+   * Latest USD price per symbol (8dp), stale or not — for valuation. Chainlink
+   * only as it leaves this function; the tick merges pool-derived quotes in for
+   * feedless tokens, which is why each entry carries its own `source`.
+   */
+  prices: Map<string, PriceQuote>;
   sequencerUp: boolean;
   blockNumber: bigint;
 }
@@ -68,7 +83,7 @@ export async function readMarketSafety(): Promise<MarketSafety> {
   });
 
   const staleFeeds = new Set<string>();
-  const prices = new Map<string, { price8: bigint; stale: boolean }>();
+  const prices = new Map<string, PriceQuote>();
   withFeed.forEach((t, i) => {
     const r = feedResults[i];
     if (r?.status !== "success") {
@@ -80,7 +95,7 @@ export async function readMarketSafety(): Promise<MarketSafety> {
     if (stale) staleFeeds.add(t.symbol);
     // Stale prices still value positions — a weekend AAPL holding isn't worth
     // zero, it's worth Friday's close until Monday.
-    if (answer > 0n) prices.set(t.symbol, { price8: answer, stale });
+    if (answer > 0n) prices.set(t.symbol, { price8: answer, stale, source: "chainlink" });
   });
 
   // Sequencer heuristic until the Chainlink sequencer-uptime feed address is

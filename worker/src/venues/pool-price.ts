@@ -51,12 +51,36 @@ export const DEFAULT_TWAP_WINDOW_SEC = 900; // 15 minutes
 export interface PoolPrice {
   pool: `0x${string}`;
   fee: number;
-  /** TWAP, USDG per whole token, 8dp — use for valuation and safety. */
+  /** TWAP, cash per whole token, 8dp — use for valuation and safety. */
   price8: bigint;
   /** Spot, same units — use for execution sizing only. */
   spot8: bigint;
-  /** USDG sitting in the pool (6dp) — the honest "how deep is this" number. */
-  liquidityUsdg: bigint;
+  /**
+   * The same TWAP at 18dp.
+   *
+   * 8dp is plenty when the cash leg is USDG, but this pool may be quoting
+   * against WETH, and a sub-cent memecoin is then worth ~0.000000015 WETH —
+   * which at 8dp rounds to the integer 2. Combining THAT through a second leg
+   * carries ~30% error and moves in 50% steps, so a 1% price drift reads as a
+   * halving and trips the drawdown breaker on rounding. Intermediate legs must
+   * combine at 18dp and be scaled to 8dp exactly once, at the end.
+   */
+  price18: bigint;
+  spot18: bigint;
+  /**
+   * How deep the pool is AT THE CURRENT PRICE, in the cash token's own raw
+   * units. Paired with `cashDecimals` so the caller converts to USD once,
+   * explicitly, instead of guessing the scale.
+   *
+   * This is the virtual reserve implied by in-range liquidity, NOT the pool's
+   * ERC-20 balance. The balance counts out-of-range positions, uncollected fees
+   * and stray transfers — none of which defend the price — so anyone could mint
+   * a single-sided position far from the current tick, clear a depth floor for
+   * the cost of gas and temporary capital, withdraw it later, and manipulate a
+   * pool the guard just vouched for.
+   */
+  liquidityCashRaw: bigint;
+  cashDecimals: number;
   twapWindowSec: number;
   /** |spot − twap| / twap, in bps. Large ⇒ the pool is being pushed right now. */
   divergenceBps: number;
@@ -76,33 +100,105 @@ export interface PoolPrice {
  * significant digit we emit — and the alternative (exact bigint 1.0001^n) costs
  * far more than the precision is worth for a valuation number.
  */
+/**
+ * A human price → a fixed-point bigint at `decimals`, without losing the digits
+ * a double actually holds.
+ *
+ * `BigInt(Math.round(human * 10 ** decimals))` looks equivalent and is not: at
+ * 18dp a price like 3000 needs 3e21, far past the 2^53 where a double stops
+ * counting in ones, so the low-order digits become noise dressed up as
+ * precision. This keeps the float multiply inside the exactly-representable
+ * range and finishes the scaling in bigint.
+ */
+export function scalePrice(human: number, decimals: number): bigint {
+  if (!Number.isFinite(human) || human <= 0) return 0n;
+  const SAFE_DIGITS = 15; // what a double reliably carries
+  const magnitude = Math.max(0, Math.ceil(Math.log10(human)));
+  const inFloat = Math.max(0, Math.min(decimals, SAFE_DIGITS - magnitude));
+  const scaled = BigInt(Math.round(human * 10 ** inFloat));
+  return scaled * 10n ** BigInt(decimals - inFloat);
+}
+
+/**
+ * Convert a Uniswap v3 tick to cash-per-whole-token at `decimals` places.
+ *
+ * A tick encodes token1_raw per token0_raw as 1.0001^tick. Two adjustments turn
+ * that into a human price: invert when the token is token1 rather than token0,
+ * and shift by the decimal difference between the two sides.
+ *
+ * NOTE the unit: this is the value of one WHOLE ERC-20 token (10^decimals raw
+ * units) — the market's own unit. Chainlink instead quotes per ERC-8056 UI
+ * SHARE, which is why a Chainlink price is multiplied by uiMultiplier and a pool
+ * price must not be. Conflating them double-counts a stock split.
+ */
+export function tickToPrice(args: {
+  tick: number;
+  tokenIsToken0: boolean;
+  tokenDecimals: number;
+  cashDecimals: number;
+  decimals?: number;
+}): bigint {
+  const ratio = Math.pow(1.0001, args.tick); // token1_raw per token0_raw
+  const shift = Math.pow(10, args.tokenDecimals - args.cashDecimals);
+  // token0 = TOKEN → ratio is cash per token; token0 = CASH → invert.
+  const human = args.tokenIsToken0 ? ratio * shift : shift / ratio;
+  return scalePrice(human, args.decimals ?? 8);
+}
+
 export function tickToPrice8(args: {
   tick: number;
   tokenIsToken0: boolean;
   tokenDecimals: number;
   cashDecimals: number;
 }): bigint {
-  const ratio = Math.pow(1.0001, args.tick); // token1_raw per token0_raw
-  const shift = Math.pow(10, args.tokenDecimals - args.cashDecimals);
-  // token0 = TOKEN → ratio is cash per token; token0 = CASH → invert.
-  const human = args.tokenIsToken0 ? ratio * shift : shift / ratio;
-  if (!Number.isFinite(human) || human <= 0) return 0n;
-  return BigInt(Math.round(human * 1e8));
+  return tickToPrice({ ...args, decimals: 8 });
 }
 
 /** Same, from slot0's sqrtPriceX96. (sqrt/2^96)² is token1_raw per token0_raw. */
+export function sqrtPriceX96ToPrice(args: {
+  sqrtPriceX96: bigint;
+  tokenIsToken0: boolean;
+  tokenDecimals: number;
+  cashDecimals: number;
+  decimals?: number;
+}): bigint {
+  const sqrt = Number(args.sqrtPriceX96) / 2 ** 96;
+  const ratio = sqrt * sqrt;
+  const shift = Math.pow(10, args.tokenDecimals - args.cashDecimals);
+  const human = args.tokenIsToken0 ? ratio * shift : shift / ratio;
+  return scalePrice(human, args.decimals ?? 8);
+}
+
 export function sqrtPriceX96ToPrice8(args: {
   sqrtPriceX96: bigint;
   tokenIsToken0: boolean;
   tokenDecimals: number;
   cashDecimals: number;
 }): bigint {
-  const sqrt = Number(args.sqrtPriceX96) / 2 ** 96;
-  const ratio = sqrt * sqrt;
-  const shift = Math.pow(10, args.tokenDecimals - args.cashDecimals);
-  const human = args.tokenIsToken0 ? ratio * shift : shift / ratio;
-  if (!Number.isFinite(human) || human <= 0) return 0n;
-  return BigInt(Math.round(human * 1e8));
+  return sqrtPriceX96ToPrice({ ...args, decimals: 8 });
+}
+
+/**
+ * How much CASH sits at the current price, in the cash token's raw units.
+ *
+ * For a v3 pool with in-range liquidity L at sqrtP, the virtual reserves are
+ * x = L / sqrtP (token0) and y = L · sqrtP (token1) — the constant-product pool
+ * that would produce the same price and the same marginal depth. That is the
+ * number manipulation cost actually scales with, and unlike balanceOf it cannot
+ * be inflated by out-of-range positions, uncollected fees or a plain transfer.
+ *
+ * Concentrated liquidity means real depth over a narrow band can exceed this, so
+ * as a FLOOR test it errs toward refusing — the safe direction.
+ */
+export function cashDepthFromLiquidity(args: {
+  liquidity: bigint;
+  sqrtPriceX96: bigint;
+  cashIsToken0: boolean;
+}): bigint {
+  const { liquidity: L, sqrtPriceX96: s } = args;
+  if (L <= 0n || s <= 0n) return 0n;
+  const Q96 = 2n ** 96n;
+  return args.cashIsToken0 ? (L * Q96) / s : (L * s) / Q96;
 }
 
 /** Mean tick over the window, from the two cumulative readings observe() gives. */
@@ -133,17 +229,31 @@ export interface PriceGuard {
  * Is this price safe to act on? A refusal is a feature: valuing a position off a
  * pool that can be moved for pocket change is how a "safe" agent gets drained.
  */
-export function poolPriceUsable(p: PoolPrice, guard: PriceGuard): { ok: true } | { ok: false; reason: string } {
-  if (p.price8 <= 0n) return { ok: false, reason: "no usable TWAP from the pool" };
+/**
+ * Why a price was refused. A STABLE identifier, separate from the prose: the
+ * worker only wants to tell the owner when the situation changes, and prose
+ * containing a live pool balance changes every time anyone trades.
+ */
+export type RefusalKind = "no-twap" | "too-thin" | "divergent";
+
+export function poolPriceUsable(
+  p: { price8: bigint; liquidityUsdg: bigint; twapWindowSec: number; divergenceBps: number },
+  guard: PriceGuard,
+): { ok: true } | { ok: false; kind: RefusalKind; reason: string } {
+  if (p.price8 <= 0n) {
+    return { ok: false, kind: "no-twap", reason: "no usable TWAP from the pool" };
+  }
   if (p.liquidityUsdg < guard.minLiquidityUsdg) {
     return {
       ok: false,
-      reason: `pool too thin: ${Number(p.liquidityUsdg) / 1e6} USDG < ${Number(guard.minLiquidityUsdg) / 1e6} floor`,
+      kind: "too-thin",
+      reason: `pool too thin: $${(Number(p.liquidityUsdg) / 1e6).toFixed(0)} at the current price < $${Number(guard.minLiquidityUsdg) / 1e6} floor`,
     };
   }
   if (p.divergenceBps > guard.maxDivergenceBps) {
     return {
       ok: false,
+      kind: "divergent",
       reason: `spot is ${(p.divergenceBps / 100).toFixed(1)}% off the ${p.twapWindowSec}s TWAP — pool may be under manipulation`,
     };
   }
@@ -163,9 +273,12 @@ export function poolPriceUsable(p: PoolPrice, guard: PriceGuard): { ok: true } |
  * The depth of a two-hop route is the SHALLOWER leg — a deep WETH/USDG pool
  * does not make a $3k memecoin pool safe to value.
  */
-export function combineLegs(tokenPerWeth8: bigint, wethPerCash8: bigint): bigint {
-  if (tokenPerWeth8 <= 0n || wethPerCash8 <= 0n) return 0n;
-  return (tokenPerWeth8 * wethPerCash8) / 100_000_000n; // both 8dp → keep 8dp
+export function combineLegs(tokenPerWeth18: bigint, wethPerCash8: bigint): bigint {
+  if (tokenPerWeth18 <= 0n || wethPerCash8 <= 0n) return 0n;
+  // 18dp × 8dp / 1e18 → 8dp. The token leg comes in at 18dp deliberately: at 8dp
+  // a sub-cent memecoin's WETH price is a single-digit integer, and multiplying
+  // THAT through the second leg quantizes the answer into ~50% steps.
+  return (tokenPerWeth18 * wethPerCash8) / 1_000_000_000_000_000_000n;
 }
 
 // ── on-chain read ───────────────────────────────────────────────────────────
@@ -211,16 +324,23 @@ export async function readPoolPrice(
   );
 
   // Deepest cash wins — that's the pool a trade would actually route through.
+  // Selection uses the balance rather than in-range liquidity because it's one
+  // cheap call per tier. Steering this is not a way in: whichever pool is picked
+  // then has its REAL depth measured below, so pointing us at a donated-to shell
+  // costs the token its price, it doesn't buy a fake one.
   let best: { fee: number; pool: `0x${string}`; cashInPool: bigint } | null = null;
   for (const p of pools) if (p && (!best || p.cashInPool > best.cashInPool)) best = p;
   if (!best || best.cashInPool === 0n) return null;
 
   try {
-    const [token0, slot0] = await Promise.all([
+    const [token0, slot0, liquidity] = await Promise.all([
       client.readContract({ address: best.pool, abi: POOL_ABI, functionName: "token0" }) as Promise<`0x${string}`>,
       client.readContract({ address: best.pool, abi: POOL_ABI, functionName: "slot0" }) as Promise<
         readonly [bigint, number, number, number, number, number, boolean]
       >,
+      client
+        .readContract({ address: best.pool, abi: POOL_ABI, functionName: "liquidity" })
+        .catch(() => 0n) as Promise<bigint>,
     ]);
     const tokenIsToken0 = token0.toLowerCase() === args.token.toLowerCase();
     const shape = {
@@ -229,12 +349,14 @@ export async function readPoolPrice(
       cashDecimals: args.cashDecimals,
     };
 
-    const spot8 = sqrtPriceX96ToPrice8({ sqrtPriceX96: slot0[0], ...shape });
+    const spot8 = sqrtPriceX96ToPrice({ sqrtPriceX96: slot0[0], ...shape, decimals: 8 });
+    const spot18 = sqrtPriceX96ToPrice({ sqrtPriceX96: slot0[0], ...shape, decimals: 18 });
 
     // A brand-new pool has observation cardinality 1, so observe() over any real
     // window reverts. That is a legitimate "no TWAP yet", not an error — and it
     // must NOT silently degrade to spot, which is the whole thing we're avoiding.
     let twap8 = 0n;
+    let twap18 = 0n;
     try {
       const [tickCumulatives] = (await client.readContract({
         address: best.pool,
@@ -243,7 +365,10 @@ export async function readPoolPrice(
         args: [[windowSec, 0]],
       })) as readonly [readonly bigint[], readonly bigint[]];
       const tick = meanTick(tickCumulatives, windowSec);
-      if (tick !== null) twap8 = tickToPrice8({ tick, ...shape });
+      if (tick !== null) {
+        twap8 = tickToPrice({ tick, ...shape, decimals: 8 });
+        twap18 = tickToPrice({ tick, ...shape, decimals: 18 });
+      }
     } catch {
       twap8 = 0n; // oracle can't serve this window — poolPriceUsable will refuse
     }
@@ -253,13 +378,34 @@ export async function readPoolPrice(
       fee: best.fee,
       price8: twap8,
       spot8,
-      liquidityUsdg: best.cashInPool,
+      price18: twap18,
+      spot18,
+      // Depth AT THE CURRENT PRICE, from in-range liquidity — not the pool's
+      // balance, which anyone can inflate with an out-of-range mint.
+      liquidityCashRaw: cashDepthFromLiquidity({
+        liquidity,
+        sqrtPriceX96: slot0[0],
+        cashIsToken0: !tokenIsToken0,
+      }),
+      cashDecimals: args.cashDecimals,
       twapWindowSec: windowSec,
-      divergenceBps: divergenceBps(spot8, twap8),
+      // Measured at 18dp for the same reason the price is combined at 18dp: on a
+      // TOKEN/WETH pool both 8dp figures collapse to single-digit integers, and
+      // comparing 1 against 2 reads as a 100% divergence. Every WETH-routed
+      // memecoin — most of this chain — would be refused as "manipulated" while
+      // trading perfectly normally. It's a ratio, so the scale cancels.
+      divergenceBps: divergenceBps(spot18, twap18),
     };
   } catch {
     return null;
   }
+}
+
+/** Raw cash units at `cashDecimals` → USD at 6dp, given USD per whole cash unit. */
+function cashRawToUsdg(rawCash: bigint, cashDecimals: number, cashPriceUsd8: bigint): bigint {
+  if (rawCash <= 0n || cashPriceUsd8 <= 0n) return 0n;
+  // raw / 10^cashDecimals × price8 / 1e8 × 1e6  →  divide by 10^(cashDecimals + 2)
+  return (rawCash * cashPriceUsd8) / 10n ** BigInt(cashDecimals + 2);
 }
 
 export interface RoutedPrice {
@@ -316,7 +462,8 @@ export async function readRoutedPrice(
       price8: direct.price8,
       spot8: direct.spot8,
       route: "direct",
-      liquidityUsdg: direct.liquidityUsdg,
+      // Cash IS USDG here, so a whole unit is $1 — 1e8 at 8dp.
+      liquidityUsdg: cashRawToUsdg(direct.liquidityCashRaw, direct.cashDecimals, 100_000_000n),
       divergenceBps: direct.divergenceBps,
       twapWindowSec: windowSec,
     };
@@ -342,17 +489,23 @@ export async function readRoutedPrice(
   ]);
   if (!leg || !wethLeg || leg.price8 <= 0n || wethLeg.price8 <= 0n) return null;
 
-  // The TOKEN/WETH pool's depth is denominated in WETH, so convert it to USD
-  // before comparing against a USD floor.
-  const legDepthUsdg = (leg.liquidityUsdg * wethLeg.price8) / 100_000_000n;
+  // The TOKEN/WETH pool's depth is denominated in WETH — 18 raw decimals, and
+  // each whole WETH is worth wethLeg.price8. Converting it explicitly through
+  // cashRawToUsdg is the whole point: doing this scaling by hand is how the
+  // number ends up 1e12 too large, which silently makes the depth floor
+  // unreachable on the WETH route — i.e. on most of this chain.
+  const legDepthUsdg = cashRawToUsdg(leg.liquidityCashRaw, leg.cashDecimals, wethLeg.price8);
+  const wethDepthUsdg = cashRawToUsdg(wethLeg.liquidityCashRaw, wethLeg.cashDecimals, 100_000_000n);
 
   return {
-    price8: combineLegs(leg.price8, wethLeg.price8),
-    spot8: combineLegs(leg.spot8, wethLeg.spot8),
+    // The token leg combines at 18dp; anything less quantizes a sub-cent
+    // memecoin's WETH price into single-digit integers.
+    price8: combineLegs(leg.price18, wethLeg.price8),
+    spot8: combineLegs(leg.spot18, wethLeg.spot8),
     route: "weth",
     // A deep WETH/USDG pool does NOT make a shallow memecoin pool safe: the
     // route is only as manipulable as its thinnest leg.
-    liquidityUsdg: legDepthUsdg < wethLeg.liquidityUsdg ? legDepthUsdg : wethLeg.liquidityUsdg,
+    liquidityUsdg: legDepthUsdg < wethDepthUsdg ? legDepthUsdg : wethDepthUsdg,
     divergenceBps: Math.max(leg.divergenceBps, wethLeg.divergenceBps),
     twapWindowSec: windowSec,
   };

@@ -33,6 +33,12 @@ export interface PositionRow {
   ui_multiplier: string;
   price_usd: number;
   price_stale: number;
+  /**
+   * 'chainlink' or 'pool'. A pool price is a Uniswap TWAP that passed the depth
+   * and divergence guards — trustworthy enough to act on, but a thinner claim
+   * than an external feed, and the UI says so rather than blurring them.
+   */
+  price_source: string;
   value_usdg: number;
 }
 export interface TradeRecord {
@@ -132,12 +138,27 @@ export async function GET() {
     try {
       positions = db
         .prepare(
-          `SELECT symbol, raw_balance, ui_multiplier, price_usd, price_stale, value_usdg
+          `SELECT symbol, raw_balance, ui_multiplier, price_usd, price_stale,
+                  price_source, value_usdg
            FROM positions ORDER BY value_usdg DESC`,
         )
         .all() as unknown as PositionRow[];
     } catch {
-      /* table not created yet */
+      // price_source arrives with a worker migration. The dashboard can be
+      // running against a database the upgraded worker hasn't opened yet, and
+      // losing the whole positions panel over a label would be a worse bug than
+      // the missing label — so fall back to the shape that always existed.
+      try {
+        const legacy = db
+          .prepare(
+            `SELECT symbol, raw_balance, ui_multiplier, price_usd, price_stale, value_usdg
+             FROM positions ORDER BY value_usdg DESC`,
+          )
+          .all() as unknown as Omit<PositionRow, "price_source">[];
+        positions = legacy.map((p) => ({ ...p, price_source: "chainlink" }));
+      } catch {
+        /* table not created yet */
+      }
     }
     try {
       trades = db

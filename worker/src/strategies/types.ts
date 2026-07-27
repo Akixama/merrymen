@@ -5,6 +5,7 @@
  * the runner pushes every intent through checkPolicy → simulate → execute.
  */
 
+import type { PriceQuote } from "../../../packages/core/src/index";
 import type { TradeIntent } from "../policy";
 
 /** One current holding, as the strategy sees it. */
@@ -23,8 +24,13 @@ export interface Snapshot {
   vaultUsdg: bigint;
   /** Current stock holdings by symbol. */
   holdings: Map<string, Holding>;
-  /** Latest Chainlink USD prices (8dp) by symbol — stale prices flagged, not hidden. */
-  prices: Map<string, { price8: bigint; stale: boolean }>;
+  /**
+   * Latest USD prices (8dp) by symbol — stale prices flagged, not hidden.
+   * `source` says whether a price is a Chainlink feed or a Uniswap TWAP; a
+   * strategy that wants to treat those differently can, and one that doesn't
+   * gets a price that already passed the depth and divergence guards.
+   */
+  prices: Map<string, PriceQuote>;
   /** Per-token pause state read from the Stock contract — never trade a paused token. */
   pausedTokens: Set<string>;
   /** Chainlink staleness per symbol; stale = underlying market closed (nights/weekends). */

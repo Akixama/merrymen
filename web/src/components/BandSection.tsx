@@ -253,6 +253,17 @@ export function BandSection() {
                   {" "}
                   ${p.value_usdg.toFixed(2)}
                   {p.price_stale ? " · px 24/5" : ""}
+                  {/* A Uniswap TWAP passed the depth and divergence guards, but it
+                      isn't a Chainlink feed — say which one you're looking at. */}
+                  {p.price_source === "pool" ? (
+                    <span
+                      className="px-pool"
+                      title="valued from a Uniswap time-averaged price, not a Chainlink feed — it passed the depth and divergence checks, but it's a thinner claim"
+                    >
+                      {" "}
+                      · pool px
+                    </span>
+                  ) : null}
                 </span>
               </span>
             );

@@ -18,7 +18,7 @@
 
 import { existsSync, statSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { explorerFor } from "../../../packages/core/src/index";
+import { explorerFor, type PriceQuote } from "../../../packages/core/src/index";
 import { homePaths } from "../home";
 import type { ResolvedConfig } from "../settings";
 import { appendJournal, getName, relationship } from "../soul";
@@ -129,7 +129,7 @@ export function tradeDigestLine(rows: TradeAgg[], periodMin: number): string {
 export interface NotifierHandle {
   stop(): void;
   /** Called from the tick with fresh feed prices (symbol → {price8, stale}). */
-  publishPrices(prices: Map<string, { price8: bigint; stale: boolean }>): void;
+  publishPrices(prices: Map<string, PriceQuote>): void;
 }
 
 export function startNotifier(deps: NotifierDeps): NotifierHandle {

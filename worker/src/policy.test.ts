@@ -119,6 +119,59 @@ describe("checkPolicy", () => {
     );
   });
 
+  /**
+   * UNKNOWN equity is not LOW equity.
+   *
+   * When a held asset can't be valued — a memecoin whose pool got too thin, a
+   * feed that was withdrawn — the tick's equity figure is a partial sum with
+   * that holding simply missing. Judging a drawdown on it reads the gap as a
+   * loss, trips the breaker, and rejects every intent INCLUDING the sell that
+   * would clear the position. The agent locks the owner in at the exact moment
+   * it promised them "you can always get out", and it can never recover on its
+   * own: the high-water mark isn't lowered while the book is incomplete, and the
+   * book stays incomplete while the token is held.
+   */
+  describe("drawdown breaker on an unknown book", () => {
+    // $8k of the $10k book is an unpriceable memecoin; the visible part is $2k.
+    const partial = { highWaterMarkUsdg: 10_000_000_000n, equityUsdg: 2_000_000_000n };
+
+    it("does NOT judge a drawdown when the book can't be totalled", () => {
+      assert.deepEqual(
+        checkPolicy(swap(), limits(), state({ ...partial, equityKnown: false })),
+        { ok: true },
+      );
+    });
+
+    it("still trips on the same numbers when the book IS complete", () => {
+      const v = checkPolicy(swap(), limits(), state({ ...partial, equityKnown: true }));
+      assert.equal(!v.ok && v.rule, "drawdown-breaker", "a real 80% drawdown must still halt");
+    });
+
+    it("treats an absent flag as a known book, so existing callers are unchanged", () => {
+      const v = checkPolicy(swap(), limits(), state(partial));
+      assert.equal(!v.ok && v.rule, "drawdown-breaker");
+    });
+
+    it("an unknown book does not become a free pass — every other rule still applies", () => {
+      const unknown = { ...partial, equityKnown: false };
+      assert.equal(
+        !checkPolicy(swap(), limits(), state({ ...unknown, opsToday: 48 })).ok,
+        true,
+        "ops cap",
+      );
+      assert.equal(
+        !checkPolicy(swap(), limits(), state({ ...unknown, spentTodayUsdg: 490_000_000n })).ok,
+        true,
+        "daily cap",
+      );
+      assert.equal(
+        !checkPolicy(swap(), limits(), state({ ...unknown, nowSec: 9_999_999_999 })).ok,
+        true,
+        "expiry",
+      );
+    });
+  });
+
   it("rejects once the daily ops budget is spent", () => {
     const v = checkPolicy(swap(), limits(), state({ opsToday: 48 }));
     assert.equal(!v.ok && v.rule, "ops-cap");

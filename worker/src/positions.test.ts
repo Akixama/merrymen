@@ -53,6 +53,52 @@ describe("positionValueUsdg (ERC-8056)", () => {
   });
 });
 
+/**
+ * Stock Tokens are 18dp; a memecoin is whatever its author chose. The asset model
+ * divides by 10^decimals, so assuming 18 for a 6dp coin undervalues the position
+ * by a factor of a trillion — and equity feeds the drawdown breaker, so that is
+ * not a display bug, it's a phantom wipeout.
+ */
+describe("positionValueUsdg — decimals are not always 18", () => {
+  it("values a 6dp token correctly (USDC-style)", () => {
+    // 1 whole token at 6dp = 1_000_000 raw, at $2 → 2 USDG
+    const v = positionValueUsdg({
+      rawBalance: 1_000_000n,
+      uiMultiplier: ONE,
+      price8: usd(2),
+      decimals: 6,
+    });
+    assert.equal(v, 2_000_000n);
+  });
+
+  it("values a 9dp token correctly", () => {
+    const v = positionValueUsdg({
+      rawBalance: 1_000_000_000n,
+      uiMultiplier: ONE,
+      price8: usd(0.5),
+      decimals: 9,
+    });
+    assert.equal(v, 500_000n); // $0.50
+  });
+
+  it("values a 0dp token correctly — no fractional units at all", () => {
+    const v = positionValueUsdg({ rawBalance: 3n, uiMultiplier: ONE, price8: usd(7), decimals: 0 });
+    assert.equal(v, 21_000_000n);
+  });
+
+  it("assuming 18 for a 6dp holding would have wiped it out (the bug this prevents)", () => {
+    const naive = positionValueUsdg({ rawBalance: 1_000_000n, uiMultiplier: ONE, price8: usd(2) });
+    assert.equal(naive, 0n, "a real $2 position reads as zero — equity craters, breaker trips");
+  });
+
+  it("omitting decimals still means 18, so every existing stock call is unchanged", () => {
+    const implicit = positionValueUsdg({ rawBalance: ONE, uiMultiplier: ONE, price8: usd(250) });
+    const explicit = positionValueUsdg({ rawBalance: ONE, uiMultiplier: ONE, price8: usd(250), decimals: 18 });
+    assert.equal(implicit, explicit);
+    assert.equal(implicit, 250_000_000n);
+  });
+});
+
 const tok = (symbol: string, address: `0x${string}`): StockToken => ({
   symbol,
   name: symbol,
@@ -67,6 +113,8 @@ const feedless = (symbol: string, address: `0x${string}`): StockToken => ({
 });
 const AAPL = tok("AAPL", "0x00000000000000000000000000000000000000a1");
 const TSLA = tok("TSLA", "0x00000000000000000000000000000000000000b2");
+/** A Chainlink quote — the default provenance everywhere in this file. */
+const px = (v: number, stale = false) => ({ price8: usd(v), stale, source: "chainlink" as const });
 const good = (result: unknown) => ({ status: "success" as const, result });
 const bad = () => ({ status: "failure" as const, error: new Error("revert") });
 const client = (results: unknown[]): PublicClient => ({ multicall: async () => results }) as unknown as PublicClient;
@@ -74,7 +122,7 @@ const ACCT = "0x000000000000000000000000000000000000dEaD" as const;
 
 describe("readPositions — a held holding is never silently valued at zero", () => {
   it("a held token with a price is valued and not flagged", async () => {
-    const prices = new Map([["AAPL", { price8: usd(200), stale: false }]]);
+    const prices = new Map([["AAPL", px(200)]]);
     const r = await readPositions(client([good(5n * ONE), good(ONE)]), ACCT, [AAPL], prices);
     assert.equal(r.positions.length, 1);
     assert.equal(r.positions[0]?.symbol, "AAPL");
@@ -88,28 +136,28 @@ describe("readPositions — a held holding is never silently valued at zero", ()
   });
 
   it("a HELD token whose multiplier read reverts is flagged, not mispriced at 1.0", async () => {
-    const prices = new Map([["AAPL", { price8: usd(200), stale: false }]]);
+    const prices = new Map([["AAPL", px(200)]]);
     const r = await readPositions(client([good(5n * ONE), bad()]), ACCT, [AAPL], prices);
     assert.deepEqual(r.positions, []);
     assert.deepEqual(r.missingPrice, ["AAPL"]);
   });
 
   it("a zero-balance token is not held — absent from both lists (not a coverage gap)", async () => {
-    const prices = new Map([["AAPL", { price8: usd(200), stale: false }]]);
+    const prices = new Map([["AAPL", px(200)]]);
     const r = await readPositions(client([good(0n), good(ONE)]), ACCT, [AAPL], prices);
     assert.deepEqual(r.positions, []);
     assert.deepEqual(r.missingPrice, []);
   });
 
   it("mixed: one priced holding valued, one unpriced holding flagged", async () => {
-    const prices = new Map([["AAPL", { price8: usd(200), stale: false }]]); // TSLA absent
+    const prices = new Map([["AAPL", px(200)]]); // TSLA absent
     const r = await readPositions(client([good(ONE), good(ONE), good(2n * ONE), good(ONE)]), ACCT, [AAPL, TSLA], prices);
     assert.deepEqual(r.positions.map((p) => p.symbol), ["AAPL"]);
     assert.deepEqual(r.missingPrice, ["TSLA"]);
   });
 
   it("stale-but-present price still values the holding (weekend prices aren't a gap)", async () => {
-    const prices = new Map([["AAPL", { price8: usd(200), stale: true }]]);
+    const prices = new Map([["AAPL", px(200, true)]]);
     const r = await readPositions(client([good(5n * ONE), good(ONE)]), ACCT, [AAPL], prices);
     assert.equal(r.positions.length, 1);
     assert.equal(r.positions[0]?.priceStale, true);
@@ -168,10 +216,110 @@ describe("readPositions — a missing feed is not a failed feed", () => {
   it("a feedless token still values normally if a price IS supplied (e.g. a DEX quote)", async () => {
     // The seam for Phase 3: once a non-Chainlink price source exists, feeding it
     // through this same map values the position with no further changes here.
-    const prices = new Map([["DOGE", { price8: usd(0.42), stale: false }]]);
+    const prices = new Map([["DOGE", px(0.42)]]);
     const r = await readPositions(client([good(100n * ONE), good(ONE)]), ACCT, [DOGE], prices);
     assert.equal(r.positions.length, 1);
     assert.equal(r.positions[0]?.symbol, "DOGE");
     assert.deepEqual(r.unpricedByDesign, []);
+  });
+});
+
+/**
+ * A memecoin is not a Stock Token. It has no uiMultiplier(), so ASKING reverts —
+ * and the old code read that revert as "held but unvaluable", the transient gap
+ * that halts the tick and retries forever. It also isn't necessarily 18dp.
+ */
+describe("readPositions — memecoins are not ERC-8056", () => {
+  const CATE: StockToken = {
+    symbol: "CATE",
+    name: "CATE",
+    address: "0x00000000000000000000000000000000000000e4",
+    chainlinkFeed: null,
+    kind: "memecoin",
+    decimals: 18,
+  };
+  const SIXDP: StockToken = { ...CATE, symbol: "SIXDP", address: "0x00000000000000000000000000000000000000e5", decimals: 6 };
+
+  it("reads ONE call for a memecoin, not two — the multiplier is never requested", async () => {
+    // Only a balance is mocked. Under the old two-call layout this would have
+    // read the next token's balance as CATE's multiplier.
+    const prices = new Map([["CATE", px(2)]]);
+    const r = await readPositions(client([good(5n * ONE)]), ACCT, [CATE], prices);
+    assert.equal(r.positions.length, 1);
+    assert.equal(r.positions[0]?.uiMultiplier, ONE, "assumed 1.0, not read from the token");
+    assert.deepEqual(r.missingPrice, []);
+  });
+
+  it("keeps stock and memecoin call layouts straight when mixed", async () => {
+    // AAPL contributes balance + multiplier; CATE contributes balance only.
+    const prices = new Map([["AAPL", px(200)], ["CATE", px(2)]]);
+    const r = await readPositions(
+      client([good(ONE), good(ONE), good(3n * ONE)]),
+      ACCT,
+      [AAPL, CATE],
+      prices,
+    );
+    assert.deepEqual(r.positions.map((p) => p.symbol), ["AAPL", "CATE"]);
+    assert.equal(r.positions[0]?.valueUsdg, 200_000_000n);
+    assert.equal(r.positions[1]?.valueUsdg, 6_000_000n, "3 CATE × $2");
+  });
+
+  it("values a 6dp memecoin off its own decimals, not 18", async () => {
+    const prices = new Map([["SIXDP", px(2)]]);
+    // 5 whole tokens at 6dp
+    const r = await readPositions(client([good(5_000_000n)]), ACCT, [SIXDP], prices);
+    assert.equal(r.positions[0]?.valueUsdg, 10_000_000n, "$10, not $0");
+    assert.equal(r.positions[0]?.decimals, 6);
+  });
+
+  it("carries the price's provenance onto the position", async () => {
+    const prices = new Map([
+      ["CATE", { price8: usd(2), stale: false, source: "pool" as const, detail: "15m TWAP" }],
+    ]);
+    const r = await readPositions(client([good(ONE)]), ACCT, [CATE], prices);
+    assert.equal(r.positions[0]?.priceSource, "pool");
+  });
+
+  it("an unpriced memecoin is still unpricedByDesign — refusing to price it must not freeze the tick", async () => {
+    const r = await readPositions(client([good(ONE)]), ACCT, [CATE], new Map());
+    assert.deepEqual(r.unpricedByDesign, ["CATE"]);
+    assert.deepEqual(r.missingPrice, [], "never the transient list — that halts trading");
+  });
+});
+
+/**
+ * Chainlink quotes USD per ERC-8056 UI SHARE; a Uniswap pool quotes USD per
+ * WHOLE ERC-20 TOKEN, which already reflects any split — the market repriced.
+ * Multiplying a pool price by uiMultiplier therefore counts the split twice.
+ */
+describe("readPositions — a pool price is per raw token, so the multiplier must not apply", () => {
+  const SPLIT = 2n * 10n ** 18n; // uiMultiplier after a 2-for-1
+
+  it("applies the multiplier to a Chainlink price", () => {
+    // 100 raw × 2.0 shares/raw × $10/share = $2,000
+    const r = positionValueUsdg({ rawBalance: 100n * ONE, uiMultiplier: SPLIT, price8: usd(10) });
+    assert.equal(r, 2_000_000_000n);
+  });
+
+  it("does NOT apply it to a pool price — the pool already repriced the raw token", async () => {
+    // Same holding, priced from a pool at $20 per RAW token = $2,000 true.
+    const prices = new Map([["AAPL", { price8: usd(20), stale: false, source: "pool" as const }]]);
+    const r = await readPositions(
+      client([good(100n * ONE), good(SPLIT)]),
+      ACCT,
+      [AAPL],
+      prices,
+    );
+    assert.equal(
+      r.positions[0]?.valueUsdg,
+      2_000_000_000n,
+      "double-counting the split would report $4,000 — a peak that never happened",
+    );
+  });
+
+  it("still REPORTS the real multiplier, it just doesn't value with it", async () => {
+    const prices = new Map([["AAPL", { price8: usd(20), stale: false, source: "pool" as const }]]);
+    const r = await readPositions(client([good(ONE), good(SPLIT)]), ACCT, [AAPL], prices);
+    assert.equal(r.positions[0]?.uiMultiplier, SPLIT, "the fact is preserved for display");
   });
 });

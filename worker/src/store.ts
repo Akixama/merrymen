@@ -168,6 +168,12 @@ function getDb(): DatabaseSync {
     // price) or 'quote' (live swap, taken from the pre-trade QuoterV2 simulation
     // rather than a parsed receipt). Never silently mix the two in analysis.
     "ALTER TABLE trades ADD COLUMN basis_source TEXT",
+    // Where a holding's price came from: 'chainlink' (an external feed) or 'pool'
+    // (a Uniswap TWAP, used for tokens with no feed). Not the same evidential
+    // quality, so every surface that shows a value can say which it is instead of
+    // presenting both as the same kind of number. Old rows default to chainlink,
+    // which is what they were — nothing else could produce a price back then.
+    "ALTER TABLE positions ADD COLUMN price_source TEXT NOT NULL DEFAULT 'chainlink'",
   ]) {
     try {
       db.exec(ddl);
@@ -415,17 +421,20 @@ export async function setPositions(
     uiMultiplier: bigint;
     priceUsd: number;
     priceStale: boolean;
+    /** 'chainlink' or 'pool' — see the price_source migration. */
+    priceSource: string;
     valueUsdg: number;
   }[],
 ): Promise<void> {
   try {
     const db = getDb();
     const upsert = db.prepare(
-      `INSERT INTO positions (agent_id, symbol, token, raw_balance, ui_multiplier, price_usd, price_stale, value_usdg, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+      `INSERT INTO positions (agent_id, symbol, token, raw_balance, ui_multiplier, price_usd, price_stale, price_source, value_usdg, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
        ON CONFLICT(agent_id, symbol) DO UPDATE SET
          raw_balance = excluded.raw_balance, ui_multiplier = excluded.ui_multiplier,
          price_usd = excluded.price_usd, price_stale = excluded.price_stale,
+         price_source = excluded.price_source,
          value_usdg = excluded.value_usdg, updated_at = excluded.updated_at`,
     );
     for (const p of positions) {
@@ -437,6 +446,7 @@ export async function setPositions(
         p.uiMultiplier.toString(),
         p.priceUsd,
         p.priceStale ? 1 : 0,
+        p.priceSource,
         p.valueUsdg,
       );
     }

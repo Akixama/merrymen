@@ -60,6 +60,27 @@ export interface CustomToken {
   decimals: number;
 }
 
+/**
+ * A price AND where it came from.
+ *
+ * Chainlink and a Uniswap pool are not the same evidential quality: one is an
+ * external feed that costs real money to move, the other is a pool balance. Both
+ * end up as an 8dp number, and once they're both just numbers nothing downstream
+ * can tell them apart — so the provenance travels with the price.
+ *
+ * `source` is REQUIRED, never optional with a default. A field someone forgot to
+ * set must not silently read as "trustworthy".
+ */
+export interface PriceQuote {
+  /** USD per whole token, 8dp — the same unit Chainlink feeds emit. */
+  price8: bigint;
+  /** Chainlink feed older than 2h. Expected on weekends (feeds run 24/5). */
+  stale: boolean;
+  source: "chainlink" | "pool";
+  /** For pool prices: route + depth, so a human can judge the number. */
+  detail?: string;
+}
+
 /** Reject anything that isn't a plausible ERC-20 entry before it can reach a
  * policy allowlist or a price lookup. Shape only — depth is checked on-chain. */
 export function isValidCustomToken(t: unknown): t is CustomToken {

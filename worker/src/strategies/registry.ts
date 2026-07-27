@@ -51,6 +51,46 @@ export function tokensForSymbols(symbols: readonly string[]): StockToken[] {
   return STOCK_TOKENS.filter((t) => symbols.includes(t.symbol));
 }
 
+/**
+ * The full set the worker watches: the curated basket, plus whatever the owner
+ * added themselves.
+ *
+ * Owner-added entries become `kind: "memecoin"` with `chainlinkFeed: null`, which
+ * is what routes them to pool pricing and keeps them out of every code path that
+ * assumes an issuer-backed Stock Token (ERC-8056 multipliers, pause reads, feed
+ * staleness). They carry their real `decimals`, because the asset model divides
+ * by 10^decimals and 18 is a guess that silently misvalues a 9dp coin.
+ *
+ * Registry entries WIN on collision. A curated token has a verified address and a
+ * feed; letting a settings entry shadow it would let a typo'd or hostile address
+ * take over a real symbol — and the basket would keep naming it as if nothing
+ * had changed.
+ */
+export function watchTokensFor(
+  basketSymbols: readonly string[],
+  customTokens: readonly { symbol: string; address: `0x${string}`; decimals: number }[],
+): StockToken[] {
+  const basket = tokensForSymbols(basketSymbols);
+  const takenSymbols = new Set(STOCK_TOKENS.map((t) => t.symbol.toUpperCase()));
+  const takenAddresses = new Set(basket.map((t) => t.address.toLowerCase()));
+  const extras: StockToken[] = [];
+  for (const c of customTokens) {
+    if (takenSymbols.has(c.symbol.toUpperCase())) continue;
+    if (takenAddresses.has(c.address.toLowerCase())) continue;
+    takenSymbols.add(c.symbol.toUpperCase());
+    takenAddresses.add(c.address.toLowerCase());
+    extras.push({
+      symbol: c.symbol,
+      name: c.symbol,
+      address: c.address,
+      chainlinkFeed: null,
+      kind: "memecoin",
+      decimals: c.decimals,
+    });
+  }
+  return [...basket, ...extras];
+}
+
 function legsFor(symbols: readonly string[]) {
   return tokensForSymbols(symbols).map((t, _, arr) => ({
     symbol: t.symbol,
