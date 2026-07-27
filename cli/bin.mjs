@@ -382,7 +382,7 @@ async function onboard() {
   // plain ESM and can't import the TS core. keyField routes the key to the field
   // the worker reads: groq/anthropic keep their classic fields, the rest use llmApiKey.
   const LLM_PROVIDERS = [
-    { id: "merrymen", label: "Merrymen AI", keyField: "llmApiKey", modelField: "llmProviderModel", def: "merrymen-fast", key: "ai.merrymen.dev/claim", holder: true, needsKey: true },
+    { id: "merrymen", label: "Merrymen AI", keyField: "llmApiKey", modelField: "llmProviderModel", def: "merrymen-fast", key: "merrymen-gateway-production.up.railway.app/claim", holder: true, needsKey: true },
     { id: "groq", label: "Groq", keyField: "groqApiKey", modelField: "groqModel", def: "llama-3.3-70b-versatile", key: "console.groq.com/keys", free: true, needsKey: true },
     { id: "openai", label: "OpenAI", keyField: "llmApiKey", modelField: "llmProviderModel", def: "gpt-4o-mini", key: "platform.openai.com/api-keys", needsKey: true },
     { id: "anthropic", label: "Anthropic (Claude)", keyField: "anthropicApiKey", modelField: "llmModel", def: "claude-opus-4-8", key: "console.anthropic.com/settings/keys", needsKey: true },

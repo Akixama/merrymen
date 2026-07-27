@@ -16,6 +16,22 @@
  * are round placeholders, not calibrated to any supply or price.
  */
 
+/**
+ * Where the Merry Circle gateway actually lives — the ONE place this is written.
+ *
+ * The gateway is the holder-utility layer in practice: it fronts the LLM and
+ * Bitquery so a holder needs no keys of their own. Its hostname was previously
+ * duplicated across the provider registry, the CLI's provider table and the
+ * Bitquery client, which meant moving it was four edits and a test, and missing
+ * one left some paths pointing at a host that wasn't serving.
+ *
+ * CURRENTLY the Railway service URL. `ai.merrymen.dev` is registered and its DNS
+ * is correct, but Railway hasn't issued the Let's Encrypt certificate yet, so
+ * TLS on that name resets. Both hostnames route to the same service — switch
+ * this line back once the cert lands and every path follows.
+ */
+export const MERRYMEN_GATEWAY_ORIGIN = "https://merrymen-gateway-production.up.railway.app";
+
 /** The token, on the same chain the agents trade (Robinhood Chain mainnet). */
 export const MERRYMEN_TOKEN = {
   symbol: "MERRYMEN",

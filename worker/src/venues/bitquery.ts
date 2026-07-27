@@ -26,6 +26,8 @@
  * caught, typed miss rather than a throw.
  */
 
+import { MERRYMEN_GATEWAY_ORIGIN } from "../../../packages/core/src/index";
+
 /** Bitquery's V2 (streaming) GraphQL endpoint — the one carrying EVM(network:). */
 export const BITQUERY_DEFAULT_ENDPOINT = "https://streaming.bitquery.io/graphql";
 
@@ -43,7 +45,7 @@ export const BITQUERY_NETWORK = "robinhood";
  * runs it. So this client sends `{query: "<name>", variables}` when it's talking
  * to the gateway, and real GraphQL only when it's using the owner's own key.
  */
-export const MERRYMEN_GATEWAY_BITQUERY = "https://ai.merrymen.dev/bitquery";
+export const MERRYMEN_GATEWAY_BITQUERY = `${MERRYMEN_GATEWAY_ORIGIN}/bitquery`;
 
 export interface BitqueryCreds {
   apiKey: string;
