@@ -219,6 +219,32 @@ export function selectMemories(
 }
 
 /**
+ * "about twenty minutes", "yesterday evening", "six days" — the gap since the
+ * owner last spoke, in words rather than a timestamp.
+ *
+ * Tiny, and the best warmth-per-token in the whole context block: it's the
+ * difference between opening cold every single time and "been a few days — how'd
+ * the coursework land?". Returns null when there's no previous turn, so a first
+ * message doesn't get a phantom gap.
+ */
+export function describeGap(lastAtSec: number | null, nowSec: number): string | null {
+  if (lastAtSec === null) return null;
+  const s = Math.max(0, nowSec - lastAtSec);
+  if (s < 90) return "moments ago";
+  const mins = Math.round(s / 60);
+  if (mins < 60) return `about ${mins} minute${mins === 1 ? "" : "s"} ago`;
+  const hours = Math.round(s / 3600);
+  if (hours < 24) return `about ${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(s / 86_400);
+  if (days === 1) return "yesterday";
+  if (days < 14) return `${days} days ago`;
+  const weeks = Math.floor(days / 7);
+  if (weeks < 9) return `about ${weeks} weeks ago`;
+  const months = Math.floor(days / 30);
+  return `about ${months} month${months === 1 ? "" : "s"} ago`;
+}
+
+/**
  * Render selected memories as prompt text. Whole items only — never truncated
  * mid-line, because half a fact is worse than no fact.
  */

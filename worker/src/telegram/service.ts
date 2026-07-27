@@ -60,9 +60,10 @@ import {
   setName as setSoulName,
   soulPromptBlock,
   identityBlock,
-  memoryBlock,
-  lastRecalledIds,
+  recallForPrompt,
 } from "../soul";
+import { appendChatTurn, clearChatTurns, lastChatTurnAt, recentChatTurns } from "../store";
+import { describeGap } from "../memory/retrieve";
 
 export interface TelegramServiceDeps {
   /** Live config (reassigned each tick by refreshConfig — pass a getter). */
@@ -131,11 +132,37 @@ export function startTelegram(deps: TelegramServiceDeps): { stop: () => void } {
   // One detached /agent task per chat; /agent stop flips the flag mid-run.
   const agentRuns = new Map<number, { stopped: boolean }>();
 
-  const pushHistory = (chatId: number, role: "user" | "assistant", content: string): void => {
-    const h = history.get(chatId) ?? [];
-    h.push({ role, content: content.slice(0, 600) });
+  /**
+   * The in-memory map is now a CACHE over the sqlite log, not the source of
+   * truth. First touch of a chat after a restart pulls the conversation back
+   * from disk — before this, every restart silently wiped the thread and the
+   * merryman greeted a mid-conversation owner like a stranger.
+   */
+  const historyFor = (chatId: number): { role: "user" | "assistant"; content: string }[] => {
+    let h = history.get(chatId);
+    if (!h) {
+      h = recentChatTurns(chatId, HISTORY_TURNS * 2).map((t) => ({ role: t.role, content: t.content }));
+      history.set(chatId, h);
+      // Restore the last turn's recalled ids too, so a pronoun sent right after
+      // a restart still lands on whatever the merryman was just talking about.
+      const lastWithIds = [...recentChatTurns(chatId, 4)].reverse().find((t) => t.memoryIds?.length);
+      if (lastWithIds?.memoryIds?.length) stickyIds.set(chatId, new Set(lastWithIds.memoryIds));
+    }
+    return h;
+  };
+
+  const pushHistory = (
+    chatId: number,
+    role: "user" | "assistant",
+    content: string,
+    memoryIds?: string[],
+  ): void => {
+    const trimmed = content.slice(0, 600);
+    const h = historyFor(chatId);
+    h.push({ role, content: trimmed });
     while (h.length > HISTORY_TURNS * 2) h.shift();
     history.set(chatId, h);
+    appendChatTurn(chatId, { role, content: trimmed, memoryIds }); // write-through
   };
 
   const handle = async (msg: TgMessage, cfg: ResolvedConfig): Promise<void> => {
@@ -409,7 +436,16 @@ export function startTelegram(deps: TelegramServiceDeps): { stop: () => void } {
           `my soul lives in ~/.merrymen/soul/ — read it, edit it, it's yours. /name renames me · /forget wipes what I know.`,
         ].join("\n");
       },
-      forgetOwner: () => forgetOwner(),
+      // /forget must now clear the CONVERSATION too, not just OWNER.md —
+      // turns persist to disk since chat_turns, so wiping only the facts while
+      // the transcript survived would make the reply ("I've let go of what I
+      // knew about you") untrue.
+      forgetOwner: () => {
+        forgetOwner();
+        clearChatTurns(msg.chatId);
+        history.delete(msg.chatId);
+        stickyIds.delete(msg.chatId);
+      },
       // ── PC control ─────────────────────────────────────────────────────
       pcControlEnabled: cfg.telegramPcControlEnabled,
       capabilities: new Set(cfg.telegramCapabilities),
@@ -501,6 +537,9 @@ export function startTelegram(deps: TelegramServiceDeps): { stop: () => void } {
 
     // Slash command wins; else natural language (LLM) if a key is set; else nudge.
     let cmd = slash;
+    // What the narrator recalled this turn — stored on the assistant's reply so
+    // the thread survives a restart, not just a process lifetime.
+    let turnMemoryIds: string[] | undefined;
     if (!cmd) {
       const llm = resolveLlm(cfg);
       if (llm) {
@@ -510,7 +549,7 @@ export function startTelegram(deps: TelegramServiceDeps): { stop: () => void } {
         // means a remembered line can never nudge routing toward a trade.
         const identity = identityBlock(st.linkedAt, st.messageCount, now());
         const liveState = readLlmState(statusCtx());
-        const routeCtx = { state: `SOUL:\n${identity}\n\n${liveState}`, history: history.get(msg.chatId) };
+        const routeCtx = { state: `SOUL:\n${identity}\n\n${liveState}`, history: historyFor(msg.chatId) };
         const r = await interpretWithLlm(msg.text, routeCtx, llm);
         cmd = r.cmd;
         // The get-to-know-you side-channel: the model proposes a fact, the
@@ -525,16 +564,29 @@ export function startTelegram(deps: TelegramServiceDeps): { stop: () => void } {
         // the one being asked about. Written AFTER the remember side-channel, so
         // something learned this turn can be recalled in the very same reply.
         if (cmd.kind === "chat") {
-          const recalled = memoryBlock(msg.text, now(), stickyIds.get(msg.chatId));
+          const recalled = recallForPrompt(msg.text, now(), stickyIds.get(msg.chatId));
+          // Read BEFORE this turn is written, so it's the gap since they last
+          // spoke rather than zero.
+          const gap = describeGap(lastChatTurnAt(msg.chatId), now());
           const chatCtx = {
-            state: `SOUL:\n${identity}\n${recalled}\n\n${liveState}`,
-            history: history.get(msg.chatId),
+            state: [
+              `SOUL:\n${identity}`,
+              gap ? `TIME SINCE THEIR LAST MESSAGE: ${gap}` : "",
+              recalled.block,
+              "",
+              liveState,
+            ]
+              .filter(Boolean)
+              .join("\n"),
+            history: historyFor(msg.chatId),
           };
           const fluent = await narrateChat(msg.text, chatCtx, llm);
           if (fluent) cmd = { kind: "chat", reply: fluent };
-          // Remember what was surfaced so a pronoun follow-up ("is it done?")
-          // keeps the same thread instead of losing it to zero word overlap.
-          stickyIds.set(msg.chatId, new Set(lastRecalledIds(msg.text, now(), stickyIds.get(msg.chatId))));
+          // Carry what was surfaced into the next turn so a pronoun follow-up
+          // ("is it done?") keeps the thread instead of losing it to zero word
+          // overlap. Persisted on the turn below, so it survives a restart too.
+          stickyIds.set(msg.chatId, new Set(recalled.ids));
+          turnMemoryIds = recalled.ids;
         }
       } else {
         cmd = { kind: "chat", reply: "pick an AI provider and paste its key in the dashboard (Settings → AI provider) to chat in plain English — Groq, Google and Cerebras are free, or run Ollama locally. For now, try /help." };
@@ -579,7 +631,7 @@ export function startTelegram(deps: TelegramServiceDeps): { stop: () => void } {
       deps.note("warn", `Telegram: ${cmd.kind} failed — ${m}`);
       reply = `🚫 that ${cmd.kind} failed: ${esc(m.slice(0, 200))}`;
     }
-    if (!slash) pushHistory(msg.chatId, "assistant", reply.replace(/<[^>]+>/g, ""));
+    if (!slash) pushHistory(msg.chatId, "assistant", reply.replace(/<[^>]+>/g, ""), turnMemoryIds);
     await sendMessage({ token }, msg.chatId, reply);
   };
 

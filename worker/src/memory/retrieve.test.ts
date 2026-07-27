@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { jaccard, tokenize, uniq } from "./tokens";
-import { renderMemories, scoreItems, selectMemories, type MemoryItem } from "./retrieve";
+import { describeGap, renderMemories, scoreItems, selectMemories, type MemoryItem } from "./retrieve";
 
 const NOW = Math.floor(Date.UTC(2026, 6, 27) / 1000); // 2026-07-27
 const DAY = 86_400;
@@ -205,6 +205,44 @@ describe("dedupe", () => {
  * a memory can do. Storage-side sanitizers are tested in soul.test.ts — this
  * pins the boundary that ranking itself confers no capability.
  */
+describe("describeGap — the merryman knows how long it's been", () => {
+  const at = (secsAgo: number) => NOW - secsAgo;
+
+  it("returns null with no previous message, so a first hello has no phantom gap", () => {
+    assert.equal(describeGap(null, NOW), null);
+  });
+
+  it("collapses anything under a minute and a half to 'moments ago'", () => {
+    assert.equal(describeGap(at(5), NOW), "moments ago");
+    assert.equal(describeGap(at(89), NOW), "moments ago");
+  });
+
+  it("scales through minutes, hours, days, weeks and months", () => {
+    assert.equal(describeGap(at(20 * 60), NOW), "about 20 minutes ago");
+    assert.equal(describeGap(at(3 * 3600), NOW), "about 3 hours ago");
+    assert.equal(describeGap(at(1 * DAY + 3600), NOW), "yesterday");
+    assert.equal(describeGap(at(6 * DAY), NOW), "6 days ago");
+    assert.equal(describeGap(at(21 * DAY), NOW), "about 3 weeks ago");
+    assert.equal(describeGap(at(200 * DAY), NOW), "about 6 months ago");
+  });
+
+  it("singularizes correctly", () => {
+    assert.equal(describeGap(at(61 * 60), NOW), "about 1 hour ago");
+    assert.equal(describeGap(at(1 * DAY + 3600), NOW), "yesterday");
+  });
+
+  it("prefers weeks up to about two months, then switches to months", () => {
+    // Deliberate: "about 5 weeks ago" reads better than "about 1 month ago",
+    // so the weeks branch runs to 8 weeks and months only start beyond it.
+    assert.equal(describeGap(at(35 * DAY), NOW), "about 5 weeks ago");
+    assert.equal(describeGap(at(70 * DAY), NOW), "about 2 months ago");
+  });
+
+  it("never goes negative on a clock skew", () => {
+    assert.equal(describeGap(NOW + 500, NOW), "moments ago");
+  });
+});
+
 describe("retrieval is not a privilege surface", () => {
   it("an instruction-shaped memory is retrievable but stays inert data", () => {
     const nasty = item({

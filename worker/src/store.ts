@@ -114,6 +114,19 @@ function getDb(): DatabaseSync {
       at INTEGER NOT NULL DEFAULT (unixepoch())
     );
     CREATE INDEX IF NOT EXISTS decisions_agent_time ON decisions (agent_id, at DESC);
+    -- Conversation turns, so the merryman doesn't lose the thread on restart.
+    -- Lives in sqlite rather than a json file because the db is already open and
+    -- single-writer; a file would need its own read-modify-write and would race
+    -- the notifier. Content is already truncated and HTML-stripped by the caller.
+    CREATE TABLE IF NOT EXISTS chat_turns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id INTEGER NOT NULL,
+      role TEXT NOT NULL,          -- 'user' | 'assistant'
+      content TEXT NOT NULL,
+      memory_ids TEXT,             -- JSON array: what was recalled for this turn
+      at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS chat_turns_chat_time ON chat_turns (chat_id, id DESC);
     -- Weighted-average cost basis per held symbol (see basis.ts). Quantities are
     -- 18dp RAW units and cost is 6dp USDG, both as decimal strings because
     -- sqlite has no bigint — parsed straight back to BigInt on read.
@@ -481,6 +494,83 @@ export async function getSpentTodayUsdg(agentId: string): Promise<number> {
     )
     .get(agentId) as { spent: number } | undefined;
   return row?.spent ?? 0;
+}
+
+// ── chat turns — the conversation survives a restart ──────────────────────
+
+/** Kept per chat on disk. Only the newest few reach a prompt (see service.ts);
+ * the rest exist for sticky-memory lookup and future recall. */
+const CHAT_TURNS_KEPT = 40;
+
+export interface ChatTurn {
+  role: "user" | "assistant";
+  content: string;
+  /** Memory ids surfaced for this turn, so a pronoun follow-up keeps the thread. */
+  memoryIds?: string[];
+}
+
+/** Append one turn and prune the chat back to its retention window. */
+export function appendChatTurn(chatId: number, turn: ChatTurn): void {
+  try {
+    const db = getDb();
+    db.prepare("INSERT INTO chat_turns (chat_id, role, content, memory_ids) VALUES (?, ?, ?, ?)").run(
+      chatId,
+      turn.role,
+      turn.content,
+      turn.memoryIds && turn.memoryIds.length ? JSON.stringify(turn.memoryIds) : null,
+    );
+    db.prepare(
+      `DELETE FROM chat_turns WHERE chat_id = ? AND id NOT IN (
+         SELECT id FROM chat_turns WHERE chat_id = ? ORDER BY id DESC LIMIT ?)`,
+    ).run(chatId, chatId, CHAT_TURNS_KEPT);
+  } catch (e) {
+    console.error("[store] chat turn insert failed:", e);
+  }
+}
+
+/** The most recent turns for a chat, oldest-first (prompt order). */
+export function recentChatTurns(chatId: number, limit = CHAT_TURNS_KEPT): ChatTurn[] {
+  try {
+    const rows = getDb()
+      .prepare("SELECT role, content, memory_ids FROM chat_turns WHERE chat_id = ? ORDER BY id DESC LIMIT ?")
+      .all(chatId, limit) as { role: string; content: string; memory_ids: string | null }[];
+    return rows
+      .reverse()
+      .map((r) => {
+        let memoryIds: string[] | undefined;
+        try {
+          memoryIds = r.memory_ids ? (JSON.parse(r.memory_ids) as string[]) : undefined;
+        } catch {
+          memoryIds = undefined; // a corrupt blob must not cost us the turn
+        }
+        return { role: r.role === "assistant" ? "assistant" : "user", content: r.content, memoryIds } as ChatTurn;
+      });
+  } catch {
+    return [];
+  }
+}
+
+/** Unix seconds of the last turn in a chat, or null if there is none. Lets the
+ * merryman know it's been three days rather than opening cold every time. */
+export function lastChatTurnAt(chatId: number): number | null {
+  try {
+    const row = getDb()
+      .prepare("SELECT at FROM chat_turns WHERE chat_id = ? ORDER BY id DESC LIMIT 1")
+      .get(chatId) as { at: number } | undefined;
+    return row?.at ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Forget one chat's conversation — what /forget must actually do now that
+ * turns persist to disk rather than dying with the process. */
+export function clearChatTurns(chatId: number): void {
+  try {
+    getDb().prepare("DELETE FROM chat_turns WHERE chat_id = ?").run(chatId);
+  } catch (e) {
+    console.error("[store] chat turn clear failed:", e);
+  }
 }
 
 // ── cost basis — weighted-average, per symbol (see basis.ts) ──────────────
