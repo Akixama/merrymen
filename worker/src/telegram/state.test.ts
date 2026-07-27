@@ -13,6 +13,7 @@ const base: TelegramState = {
   lastTradeDigestAt: 0,
   firedAlerts: {},
   lastDigestDate: "",
+  lastJournalDate: "",
   priceAlerts: [],
   reminders: [],
   watchers: [],

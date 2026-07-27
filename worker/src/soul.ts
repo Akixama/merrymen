@@ -39,6 +39,8 @@ const identityFile = () => path.join(soulDir(), "IDENTITY.md");
 const ownerFile = () => path.join(soulDir(), "OWNER.md");
 const journalFile = () => path.join(soulDir(), "JOURNAL.md");
 const notesFile = () => path.join(soulDir(), "NOTES.md");
+/** Where evicted lines go instead of being destroyed — still retrievable. */
+const archiveFile = () => path.join(soulDir(), "ARCHIVE.md");
 
 function readSafe(file: string): string {
   try {
@@ -172,6 +174,33 @@ export function sanitizeMemory(raw: string): string | null {
   return fact;
 }
 
+/**
+ * Move evicted lines to ARCHIVE.md instead of destroying them.
+ *
+ * The working files stay small and hand-editable, but nothing is ever actually
+ * forgotten: retrieval searches the archive too, so an old fact is DEMOTED, not
+ * deleted. Needs no model, so it works identically for users with no provider
+ * key — which is why this is the whole consolidation story rather than an
+ * LLM summarisation pass.
+ */
+function archiveLines(lines: readonly string[]): void {
+  if (!lines.length) return;
+  const current = readSafe(archiveFile());
+  const header = current.trim()
+    ? current.trimEnd()
+    : "# Archive\n\n<!-- Older memories, moved here to keep the working files small. Still searchable. -->";
+  writeSafe(archiveFile(), `${header}\n${lines.join("\n")}\n`);
+}
+
+/** Archived lines, re-sanitized on the way out like every other soul file. */
+export function archivedLines(): string[] {
+  return readSafe(archiveFile())
+    .split("\n")
+    .filter((l) => l.startsWith("- ("))
+    .map((l) => sanitizeDatedLine(l, sanitizeNote))
+    .filter((l): l is string => l !== null);
+}
+
 /** Append a learned fact about the owner (deduped, capped). Returns stored? */
 export function rememberOwnerFact(raw: string, nowSec?: number): boolean {
   const fact = sanitizeMemory(raw);
@@ -182,8 +211,13 @@ export function rememberOwnerFact(raw: string, nowSec?: number): boolean {
   if (current.toLowerCase().includes(fact.toLowerCase())) return false;
   const lines = current.split("\n");
   const facts = lines.filter((l) => l.startsWith("- ("));
-  // Cap: drop the OLDEST facts to make room.
-  while (facts.length >= MAX_OWNER_FACTS) facts.shift();
+  // Cap reached: the OLDEST move to the archive rather than being dropped.
+  const evicted: string[] = [];
+  while (facts.length >= MAX_OWNER_FACTS) {
+    const gone = facts.shift();
+    if (gone) evicted.push(gone);
+  }
+  archiveLines(evicted);
   facts.push(`- (${today(nowSec)}) ${fact}`);
   const header = lines.filter((l) => !l.startsWith("- (")).join("\n").trimEnd();
   writeSafe(ownerFile(), `${header}\n\n${facts.join("\n")}\n`);
@@ -232,7 +266,13 @@ export function rememberNote(raw: string, nowSec?: number): boolean {
   if (current.toLowerCase().includes(note.toLowerCase())) return false; // exact dupe
   const lines = current.split("\n");
   const kept = lines.filter((l) => l.startsWith("- ("));
-  while (kept.length >= MAX_NOTES) kept.shift(); // drop oldest to make room
+  // Same as owner facts: the oldest are archived, never destroyed.
+  const evicted: string[] = [];
+  while (kept.length >= MAX_NOTES) {
+    const gone = kept.shift();
+    if (gone) evicted.push(gone);
+  }
+  archiveLines(evicted);
   kept.push(`- (${today(nowSec)}) ${note}`);
   const header = lines.filter((l) => !l.startsWith("- (")).join("\n").trimEnd();
   writeSafe(notesFile(), `${header}\n\n${kept.join("\n")}\n`);
@@ -443,6 +483,13 @@ function corpusFromSoulFiles(): MemoryItem[] {
     if (it) out.push(it);
   }
   for (const l of notes()) {
+    const it = parse(l, "note");
+    if (it) out.push(it);
+  }
+  // The archive is searched too — that's what makes eviction a demotion rather
+  // than a burial. These lines are old, so recency decay already ranks them
+  // below the working set unless the query genuinely points at them.
+  for (const l of archivedLines()) {
     const it = parse(l, "note");
     if (it) out.push(it);
   }

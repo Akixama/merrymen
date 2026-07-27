@@ -61,6 +61,10 @@ export interface TelegramState {
   firedAlerts: Record<string, number>;
   /** YYYY-MM-DD of the last daily digest sent. */
   lastDigestDate: string;
+  /** YYYY-MM-DD of the last journal entry. Tracked separately from the digest:
+   * the journal is written even with no grant (it's about the day with its
+   * owner, not about trading), so the two must not starve each other. */
+  lastJournalDate: string;
   priceAlerts: PriceAlert[];
   reminders: Reminder[];
   watchers: Watcher[];
@@ -79,6 +83,7 @@ const DEFAULT: TelegramState = {
   lastTradeDigestAt: 0,
   firedAlerts: {},
   lastDigestDate: "",
+  lastJournalDate: "",
   priceAlerts: [],
   reminders: [],
   watchers: [],
@@ -100,6 +105,7 @@ export function loadTelegramState(): TelegramState {
       lastTradeDigestAt: typeof s.lastTradeDigestAt === "number" ? s.lastTradeDigestAt : 0,
       firedAlerts: s.firedAlerts && typeof s.firedAlerts === "object" ? (s.firedAlerts as Record<string, number>) : {},
       lastDigestDate: typeof s.lastDigestDate === "string" ? s.lastDigestDate : "",
+      lastJournalDate: typeof s.lastJournalDate === "string" ? s.lastJournalDate : "",
       priceAlerts: Array.isArray(s.priceAlerts)
         ? (s.priceAlerts as PriceAlert[]).filter(
             (a) =>

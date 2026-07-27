@@ -341,19 +341,35 @@ export function startNotifier(deps: NotifierDeps): NotifierHandle {
     const d = new Date(now() * 1000);
     const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     const st2 = deps.stateRef.get();
-    if (st2.lastDigestDate !== today && d.getHours() >= cfg.telegramDigestHour && inputs.grantExpiresAt !== null) {
+    const dueToday = st2.lastDigestDate !== today && d.getHours() >= cfg.telegramDigestHour;
+
+    // The DIGEST keeps its grant gate — a trading report about a wallet you
+    // don't have is noise.
+    if (dueToday && inputs.grantExpiresAt !== null) {
       const report = readReport(deps.buildStatusContext());
       await sendMessage({ token }, chatId, report);
       deps.stateRef.set({ ...deps.stateRef.get(), lastDigestDate: today });
-      // The merryman keeps its own journal — its .md grows with every day on
-      // the road. LLM voice when a key is set, honest stat lines otherwise.
-      const plainReport = report.replace(/<[^>]+>/g, "");
-      const evidence = `${plainReport}\n\nRELATIONSHIP: ${rel.stage}, day ${rel.daysTogether}, ${rel.messageCount} messages with my owner.`;
+    }
+
+    // The JOURNAL does not. It used to sit inside the same branch, so a user
+    // with no grant never accumulated one at all — even though the journal is
+    // about the day WITH ITS OWNER, not about trading, and it writes a file
+    // rather than sending a message. Tracked on its own date so the two can
+    // never starve each other.
+    if (st2.lastJournalDate !== today && d.getHours() >= cfg.telegramDigestHour) {
+      const hasGrant = inputs.grantExpiresAt !== null;
+      const plainReport = hasGrant ? readReport(deps.buildStatusContext()).replace(/<[^>]+>/g, "") : "";
+      const evidence = [
+        hasGrant ? plainReport : "No wallet armed today — a quiet day off the road.",
+        ``,
+        `RELATIONSHIP: ${rel.stage}, day ${rel.daysTogether}, ${rel.messageCount} messages with my owner.`,
+      ].join("\n");
       const journalLlm = resolveLlm(cfg);
       const entry = journalLlm
         ? await narrateJournal(evidence, journalLlm)
-        : `Day ${rel.daysTogether} with my owner (${rel.stage}).\n${plainReport}`;
+        : `Day ${rel.daysTogether} with my owner (${rel.stage}).\n${hasGrant ? plainReport : "No wallet armed today."}`;
       appendJournal(entry, now());
+      deps.stateRef.set({ ...deps.stateRef.get(), lastJournalDate: today });
     }
   };
 

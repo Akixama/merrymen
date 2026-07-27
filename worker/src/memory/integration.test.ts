@@ -41,6 +41,35 @@ after(() => {
   }
 });
 
+describe("eviction demotes to the archive — it never destroys", () => {
+  it("a fact pushed past the cap is still findable afterwards", async () => {
+    // Own home so the corpus above isn't disturbed.
+    const home2 = mkdtempSync(path.join(os.tmpdir(), "mm-arch-"));
+    const prev = process.env.MERRYMEN_HOME;
+    process.env.MERRYMEN_HOME = home2;
+    try {
+      mkdirSync(path.join(home2, "soul"), { recursive: true });
+      const soul = await import(`../soul?arch=${Date.now()}`);
+      soul.rememberOwnerFact("They keep an allotment in Peckham.", NOW);
+      // Push well past MAX_OWNER_FACTS (60) so the first fact must be evicted.
+      for (let i = 0; i < 70; i++) soul.rememberOwnerFact(`Filler owner fact number ${i}.`, NOW);
+
+      const working = soul.ownerFacts().join("\n");
+      assert.ok(!working.includes("allotment"), "it really did leave the working set");
+      const archived = soul.archivedLines().join("\n");
+      assert.ok(archived.includes("allotment"), "…but it was archived, not deleted");
+
+      // And crucially: still reachable through normal recall.
+      const block = soul.memoryBlock("do they have an allotment?", NOW);
+      assert.ok(block.includes("allotment"), "an evicted fact is demoted, not forgotten");
+    } finally {
+      if (prev === undefined) delete process.env.MERRYMEN_HOME;
+      else process.env.MERRYMEN_HOME = prev;
+      rmSync(home2, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("memoryBlock reaches what the old slice could not", () => {
   it("recalls a 60-day-old note when the owner asks about it", () => {
     const block = memoryBlock("when is the BIM coursework due?", NOW);
