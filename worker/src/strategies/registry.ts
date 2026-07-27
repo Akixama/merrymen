@@ -33,6 +33,13 @@ export interface StrategyBuildOpts {
   swapRouter: `0x${string}`;
   usdg6: (v: number) => bigint;
   basketSymbols: string[];
+  /**
+   * Every token the worker watches — registry basket plus owner-added ones.
+   * Legs are resolved against this, so a memecoin the owner selected is a
+   * tradable leg rather than something the agent can only stare at. Omitted
+   * (tests, fixtures) falls back to the shipped registry, i.e. old behaviour.
+   */
+  universe?: readonly StockToken[];
   buyPerTickUsdg: number;
   idleFloorUsdg: number;
   gapEnterBudgetUsdg: number;
@@ -91,15 +98,32 @@ export function watchTokensFor(
   return [...basket, ...extras];
 }
 
-function legsFor(symbols: readonly string[]) {
-  return tokensForSymbols(symbols).map((t, _, arr) => ({
+/**
+ * The legs a strategy trades: the owner's selected symbols, resolved against the
+ * FULL watch set rather than the shipped registry.
+ *
+ * Resolving from STOCK_TOKENS alone is why an owner-added memecoin could be
+ * watched, priced and valued and then never traded by anything — it was in the
+ * watch set but could not become a leg, so no strategy ever saw it.
+ *
+ * Selection stays explicit and stays the owner's: adding a token in settings
+ * means "know about this", putting its symbol in the basket means "trade it".
+ * Exactly how stock tokens already work, and deliberately NOT automatic — a
+ * token added to be tracked must not start being bought on its own.
+ */
+export function legsForUniverse(symbols: readonly string[], universe?: readonly StockToken[]) {
+  const pool = universe ?? STOCK_TOKENS;
+  const chosen = pool.filter((t) => symbols.includes(t.symbol));
+  return chosen.map((t) => ({
     symbol: t.symbol,
     token: t.address,
-    weightBps: Math.floor(10_000 / arr.length),
+    weightBps: Math.floor(10_000 / chosen.length),
   }));
 }
 
 export function buildStrategy(name: string, opts: StrategyBuildOpts): Strategy {
+  const legsFor = (symbols: readonly string[]) =>
+    legsForUniverse(symbols, opts.universe);
   // Not a builtin → a user-written strategy file in strategies/ (lazy-loaded,
   // hot-reloading, crash-isolated; every intent is shape-validated and then
   // policy-checked like any other).

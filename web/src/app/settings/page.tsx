@@ -385,7 +385,10 @@ export default function SettingsPage() {
 
           <div className="settings-subtle mono">basket · equal-weighted</div>
           <div className="symbol-grid">
-            {view.knownSymbols.map((sym) => (
+            {/* Owner-added tokens sit alongside the registry ones. Selecting is
+                still an explicit act: adding a token means "know about this",
+                putting it in the basket means "trade it". */}
+            {[...view.knownSymbols, ...activeTokens.map((t) => t.symbol)].map((sym) => (
               <button
                 key={sym}
                 type="button"

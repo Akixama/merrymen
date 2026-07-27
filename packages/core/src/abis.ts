@@ -25,6 +25,28 @@ export const UNISWAP_SWAP_ROUTER_ABI = [
     ],
     outputs: [{ name: "amountOut", type: "uint256" }],
   },
+  {
+    // Multi-hop. `path` is packed token/fee/token(/fee/token…), and the router
+    // holds the intermediate leg itself — so a USDG→WETH→CATE swap still only
+    // needs USDG approved. That's why routing through WETH costs no new grant
+    // permission and no re-sign.
+    type: "function",
+    name: "exactInput",
+    stateMutability: "payable",
+    inputs: [
+      {
+        name: "params",
+        type: "tuple",
+        components: [
+          { name: "path", type: "bytes" },
+          { name: "recipient", type: "address" },
+          { name: "amountIn", type: "uint256" },
+          { name: "amountOutMinimum", type: "uint256" },
+        ],
+      },
+    ],
+    outputs: [{ name: "amountOut", type: "uint256" }],
+  },
 ] as const;
 
 /** Chainlink AggregatorV3Interface — stock feeds run 24/5; check updatedAt for staleness. */

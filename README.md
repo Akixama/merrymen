@@ -358,12 +358,21 @@ Anything valued this way is marked **pool px** in the dashboard and in `/status`
 because it isn't the same quality of claim as a Chainlink feed and shouldn't look
 like one.
 
-**Adding a token doesn't make it tradable.** The list of tokens your agent may
-approve is baked into the session key you signed, so widening it takes a
-signature — that's the wall doing its job, not a bug. Save the token, then hit
-**re-sign** on `/grant`: same wallet, same address, same funds, same caps, free and
-instant. Until you do, `/settings` and the event feed both say plainly which
-tokens your key can't sell, rather than letting you find out when a sell reverts.
+Three explicit steps, and each one means something different:
+
+1. **Add it** in `/settings` — "know about this." Your agent reads the balance,
+   prices it, and shows it in your book. It does not trade it.
+2. **Select it in the basket** — "trade this." Same act as picking a stock.
+3. **Re-sign at `/grant`** — the tradable list is baked into the session key you
+   signed, so widening it takes a signature. That's the wall doing its job, not a
+   bug. Free, instant, same wallet, same address, same funds, same caps.
+
+Until step 3, `/settings`, `/grant` and the event feed all say plainly which
+tokens your key can't sell — you never find out from a reverted trade.
+
+Most memecoins here have no direct USDG pool, so swaps route through WETH
+automatically (`USDG → WETH → TOKEN`). The router holds the middle leg, so this
+needs no extra approval and no extra re-sign.
 
 ### Never a position you can't exit
 

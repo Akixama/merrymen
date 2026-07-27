@@ -52,7 +52,7 @@ import {
   type StoredGrant,
 } from "../../packages/core/src/index";
 import { fetchRialtoQuote, resolveRialtoRouter } from "./venues/rialto";
-import { bestQuote, buildSwapCall, minOutWithSlippage } from "./venues/uniswap";
+import { bestRoute, buildSwapCall, minOutWithSlippage } from "./venues/uniswap";
 import { createAgentExecutor, type AgentExecutor } from "./executor";
 import { readHolderStatus } from "./circle";
 import { accrueAboveHwm } from "./fees";
@@ -202,6 +202,9 @@ async function main() {
   function makeStrategy(c: ResolvedConfig): Strategy {
     return buildStrategy(c.strategy, {
       swapRouter: swapRouterFor(c),
+      // Resolve legs against the full watch set, so a selected memecoin is a
+      // leg a strategy can actually trade rather than a balance it can only see.
+      universe: watchTokensFor(c.basketSymbols, c.customTokens),
       usdg6: usdg,
       basketSymbols: c.basketSymbols,
       buyPerTickUsdg: c.buyPerTickUsdg,
@@ -712,10 +715,14 @@ async function main() {
       if (intent.kind === "swap" && cfg.swapVenue === "uniswap" && intent.sellToken !== intent.buyToken) {
         // Full leg: QuoterV2 simulation (reverts where the swap would) →
         // slippage-bounded minOut → approve + exactInputSingle in one UserOp.
-        const quote = await bestQuote(active.client, {
+        const quote = await bestRoute(active.client, {
           tokenIn: intent.sellToken,
           tokenOut: intent.buyToken,
           amountIn: intent.sellAmountRaw,
+          // Most of this chain's memecoins have no direct USDG pool at all, so
+          // direct-only quoting left them permanently untradable. The router
+          // holds the intermediate leg, so this needs no extra approval.
+          via: CASH.WETH as `0x${string}`,
         });
         if (!quote) {
           console.log(`[quote] no executable Uniswap route for ${intent.buyToken} — skipped`);
@@ -787,6 +794,8 @@ async function main() {
           recipient: executor.address,
           amountIn: intent.sellAmountRaw,
           minAmountOut: minOut,
+          // Execute the SAME route the quote priced — minOut was derived from it.
+          path: quote.path,
         });
         txHash = await executor.execute([approve, swap]);
         await addEvent(
@@ -1301,8 +1310,14 @@ async function main() {
     // Before the first tick completes, equity is unknown (0n) and the drawdown
     // check would judge garbage — hold chat trades until the book is read.
     if (lastEquityUsdg === 0n) return "🐎 the band is still saddling up (first tick pending) — try again in a minute.";
-    const token = STOCK_TOKENS.find((t) => t.symbol === symbol)?.address;
-    if (!token) return `unknown or unsupported symbol ${symbol}. I trade the basket tokens.`;
+    // Resolve against the watch set, not the shipped registry — otherwise a
+    // memecoin the owner added, covered by their grant and priced from its pool
+    // still came back "unknown symbol" when they asked for it by name.
+    const token = watchTokens.find((t) => t.symbol === symbol)?.address;
+    if (!token) {
+      const known = watchTokens.map((t) => t.symbol).join(", ");
+      return `I don't know ${symbol}. I'm watching: ${known || "nothing yet"}. Add it in /settings and re-sign at /grant if you want me trading it.`;
+    }
     const router = swapRouterFor(cfg);
     let intent: TradeIntent;
     if (side === "buy") {

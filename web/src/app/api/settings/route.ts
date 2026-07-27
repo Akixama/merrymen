@@ -413,7 +413,17 @@ export async function PUT(req: Request) {
     if (v === null || v === undefined || (Array.isArray(v) && v.length === 0)) {
       setOrClear("basketSymbols", undefined);
     } else if (Array.isArray(v)) {
-      const bad = v.filter((s) => typeof s !== "string" || !KNOWN_SYMBOLS.has(s));
+      // Owner-added tokens are selectable too — a memecoin you added and can't
+      // put in the basket is a memecoin nothing will ever trade. Validate
+      // against the registry PLUS whatever customTokens this same request is
+      // saving (or, absent that, what's already stored), so adding a token and
+      // selecting it in one save works.
+      const custom = ("customTokens" in body ? body.customTokens : stored.customTokens) ?? [];
+      const customSymbols = Array.isArray(custom)
+        ? custom.filter(isValidCustomToken).map((t) => t.symbol)
+        : [];
+      const selectable = new Set([...KNOWN_SYMBOLS, ...customSymbols]);
+      const bad = v.filter((s) => typeof s !== "string" || !selectable.has(s));
       if (bad.length > 0) errors.push(`basketSymbols: unknown symbols ${bad.join(", ")}`);
       else if (v.length > 10) errors.push("basketSymbols: at most 10 legs");
       else setOrClear("basketSymbols", v as string[]);

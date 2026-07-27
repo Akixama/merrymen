@@ -14,7 +14,7 @@
 
 import { createPublicClient, http, parseAbi } from "viem";
 import { CASH, robinhoodChain, STOCK_TOKENS } from "../packages/core/src/index";
-import { bestQuote } from "../worker/src/venues/uniswap";
+import { bestRoute } from "../worker/src/venues/uniswap";
 import { poolPriceUsable, readRoutedPrice } from "../worker/src/venues/pool-price";
 import { SETTINGS_DEFAULTS } from "../packages/core/src/settings";
 
@@ -79,18 +79,28 @@ async function main() {
     const verdict = poolPriceUsable(routed, guard);
     if (!verdict.ok) continue; // not priced → not our question
 
-    // The exact call the executor makes before a buy.
-    const buy = await bestQuote(client, { tokenIn: USDG, tokenOut: token, amountIn: TEN_USDG });
-    const canTrade = !!buy && buy.amountOut > 0n;
+    // The exact calls the executor makes — BOTH directions, because a token you
+    // can buy and not sell is the trap, not a feature.
+    const buy = await bestRoute(client, { tokenIn: USDG, tokenOut: token, amountIn: TEN_USDG, via: WETH });
+    const sell = await bestRoute(client, {
+      tokenIn: token,
+      tokenOut: USDG,
+      amountIn: 10n ** BigInt(decimals), // one whole token
+      via: WETH,
+    });
+    const canTrade = !!buy && buy.amountOut > 0n && !!sell && sell.amountOut > 0n;
     if (canTrade) pricedAndTradable++;
     else {
       pricedNotTradable++;
       stranded.push(symbol);
     }
+    const how = buy?.path ? "via WETH" : "direct";
     console.log(
       `${symbol.padEnd(12)} priced via ${routed.route.padEnd(6)} ` +
         `depth $${(Number(routed.liquidityUsdg) / 1e6).toLocaleString(undefined, { maximumFractionDigits: 0 }).padStart(12)}  ` +
-        (canTrade ? `TRADABLE (single-hop, fee ${buy!.fee})` : `NOT TRADABLE — no direct USDG pool to swap through`),
+        (canTrade
+          ? `TRADABLE (${how})`
+          : `NOT TRADABLE — buy=${buy ? "ok" : "no route"} sell=${sell ? "ok" : "no route"}`),
     );
   }
 
