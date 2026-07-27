@@ -250,6 +250,9 @@ async function main() {
   let lastTierId = holderTier.id;
   let circleBlockedNoted = false; // so the "hold to unlock" note isn't spammed each tick
   let lastSequencerUp = true;
+  // A feedless holding never resolves, so warn ONCE while it's held rather than
+  // every tick forever. Resets when the book is valuable again.
+  let notedUnpriced = false;
   let lastEquityUsdg = 0n; // updated each tick; used by chat-triggered trades
   let lastGasWei = 0n; // updated each tick; feeds the low-gas Telegram alert
   let notifierHandle: ReturnType<typeof startNotifier> | null = null;
@@ -851,6 +854,9 @@ async function main() {
     // read failed). Valuing them at 0 would crater equity and can trip the drawdown
     // breaker on a transient hiccup — so a non-empty list means "hold this tick".
     let missingPrice: string[] = [];
+    // Held assets with no feed AT ALL (every memecoin). Separate from the above
+    // because this never resolves — see the structural-gap branch below.
+    let unpricedByDesign: string[] = [];
     if (paper) {
       // The book IS the paper ledger, marked to market at the live oracle px.
       const bookRow = await getPaperBook(agentId, cfg.paperStartUsdg);
@@ -881,17 +887,40 @@ async function main() {
       balances = bal;
       positions = posRead.positions;
       missingPrice = posRead.missingPrice;
+      unpricedByDesign = posRead.unpricedByDesign;
     }
 
-    // Fail closed on incomplete valuation. A held position we can't price is NOT
-    // worth zero — recording it as such books a phantom drawdown that trips the
-    // breaker and mis-marks equity. Skip valuation + trading this tick; the next
-    // full-coverage tick resumes. Persistent gaps keep surfacing as warnings.
+    // TRANSIENT gap: a feed exists but didn't read this tick. A held position we
+    // can't price is NOT worth zero — recording it as such books a phantom
+    // drawdown that trips the breaker. Hold and retry; the next full-coverage
+    // tick resumes on its own.
     if (missingPrice.length) {
       console.log(`[tick] incomplete market coverage — no price for held ${missingPrice.join(",")}; holding (equity + breaker skipped, not a real drawdown)`);
       await addEvent(agentId, "warn", `held ${missingPrice.join(", ")} couldn't be priced this tick — trading + equity paused (fail-closed); this is a data gap, not a loss`);
       return;
     }
+
+    // STRUCTURAL gap: the asset has no feed at all, so waiting changes nothing.
+    // Treating this like the transient case froze the tick FOREVER — no equity,
+    // no breaker, and no strategy run, which meant no way to sell out of the
+    // position. Unvaluable must mean "don't judge", never "don't act".
+    //
+    // So: value what we can and keep trading, but do NOT pretend to know equity.
+    // The book is genuinely unknown, not lower — publishing a partial total would
+    // understate it and trip the drawdown breaker on arithmetic rather than loss.
+    // Equity, the HWM, the performance fee and the breaker are all skipped for
+    // this tick; strategies still run, so the owner can always get out.
+    const bookIncomplete = unpricedByDesign.length > 0;
+    if (bookIncomplete && !notedUnpriced) {
+      notedUnpriced = true; // once per run, not once per tick — this never clears
+      console.log(`[tick] held ${unpricedByDesign.join(",")} has no price feed — trading continues, equity/breaker paused while held`);
+      await addEvent(
+        agentId,
+        "warn",
+        `held ${unpricedByDesign.join(", ")} has no price feed, so the book can't be valued — trading stays OPEN (you can still sell), but equity, P&L and the drawdown breaker are paused until it's out of the book`,
+      );
+    }
+    if (!bookIncomplete) notedUnpriced = false;
 
     const positionsUsdg = positions.reduce((sum, p) => sum + p.valueUsdg, 0n);
     // Equity is the whole book — cash, vault, and multiplier-aware stock value —
@@ -904,7 +933,10 @@ async function main() {
     // sit forever as a phantom position whose cost never comes out. The chain is
     // the truth: a symbol we no longer hold has no basis, full stop.
     if (!paper) {
-      const heldNow = new Set(positions.map((p) => p.symbol));
+      // A held-but-unpriceable symbol is absent from `positions` yet very much
+      // still owned — closing its basis here would discard the cost of a real
+      // position and later report its whole sale proceeds as profit.
+      const heldNow = new Set([...positions.map((p) => p.symbol), ...unpricedByDesign, ...missingPrice]);
       for (const symbol of basisSymbols(agentId, "live")) {
         if (heldNow.has(symbol)) continue;
         const stranded = getBasis(agentId, "live", symbol);
@@ -930,7 +962,14 @@ async function main() {
     }
     const effFeeBps = effectivePerfFeeBps(cfg.perfFeeBps, holderTier);
 
-    if (paper) {
+    // With an unvaluable holding on the books, equity is UNKNOWN — not lower.
+    // Ratcheting the HWM, accruing a performance fee or judging drawdown off a
+    // partial total would all be arithmetic pretending to be information, and
+    // the drawdown one would trip the breaker on a token we simply can't price.
+    // Skipped entirely; strategies below still run, so the position can be sold.
+    if (bookIncomplete) {
+      console.log(`[account] book incomplete (${unpricedByDesign.join(",")} unpriced) — equity, HWM, fee and breaker skipped this tick`);
+    } else if (paper) {
       // Paper profit accrues NO fees and never touches the persistent agent
       // HWM — mixing paper peaks into real accounting would trip the breaker
       // (or charge fees) against money that never existed. The paper book
@@ -982,12 +1021,17 @@ async function main() {
         `positions ${fmt(positionsUsdg)} USDG (${positions.map((p) => p.symbol).join(",") || "none"})`,
     );
 
-    await addEquity(agentId, {
-      ethWei: balances.ethWei,
-      cashUsdg: usdgNum(balances.cashUsdg),
-      vaultUsdg: usdgNum(balances.vaultUsdg),
-      positionsUsdg: usdgNum(positionsUsdg),
-    });
+    // No equity row while the book is unvaluable: a partial total would read as
+    // a real drop on the equity curve and in P&L. A gap is honest; a wrong
+    // number is not.
+    if (!bookIncomplete) {
+      await addEquity(agentId, {
+        ethWei: balances.ethWei,
+        cashUsdg: usdgNum(balances.cashUsdg),
+        vaultUsdg: usdgNum(balances.vaultUsdg),
+        positionsUsdg: usdgNum(positionsUsdg),
+      });
+    }
     await setPositions(
       agentId,
       positions.map((p) => ({

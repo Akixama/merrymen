@@ -48,14 +48,23 @@ export function positionValueUsdg(args: {
 export interface PositionsRead {
   positions: Position[];
   /**
-   * Symbols the account genuinely HOLDS (balance > 0) but that we could not value
-   * this read — the multiplier reverted, or no current price was available. Valuing
-   * these at zero would crater equity and can trip the drawdown breaker on a
-   * transient RPC/feed hiccup, so the caller must treat the snapshot as INCOMPLETE
-   * (fail closed) rather than trust a total that's silently missing a holding.
-   * Distinct from "not held" (balance 0), which is simply absent from both lists.
+   * Held (balance > 0) but unvaluable THIS READ, even though a price feed is
+   * configured — the multiplier reverted, or the feed read failed. Valuing these
+   * at zero would crater equity and can trip the drawdown breaker on a transient
+   * RPC hiccup, so the caller treats the snapshot as incomplete and retries.
+   * TRANSIENT by definition: the next tick usually fixes it.
    */
   missingPrice: string[];
+  /**
+   * Held, but the asset has NO price feed configured at all (chainlinkFeed:
+   * null) — every memecoin, and any token whose feed was withdrawn.
+   *
+   * This is the crucial difference: a missing feed NEVER recovers, so treating it
+   * like a transient gap and waiting made the tick halt forever — no equity, no
+   * breaker, no strategy run, and therefore NO WAY TO SELL OUT of the position.
+   * The caller must not value these, but must also not freeze because of them.
+   */
+  unpricedByDesign: string[];
 }
 
 /**
@@ -84,10 +93,11 @@ export async function readPositions(
     .catch(() => null);
   // Whole read failed — we can't tell held from unheld. Report nothing valued and
   // no coverage; the tick can't trust this, but "" avoids a per-symbol miss list.
-  if (!results) return { positions: [], missingPrice: [] };
+  if (!results) return { positions: [], missingPrice: [], unpricedByDesign: [] };
 
   const positions: Position[] = [];
   const missingPrice: string[] = [];
+  const unpricedByDesign: string[] = [];
   tokens.forEach((t, i) => {
     const bal = results[i * 2];
     const mult = results[i * 2 + 1];
@@ -103,7 +113,11 @@ export async function readPositions(
     const uiMultiplier = mult.result as bigint;
     const price = prices.get(t.symbol);
     if (!price || price.price8 <= 0n) {
-      missingPrice.push(t.symbol);
+      // No feed CONFIGURED is a permanent condition, not a hiccup — waiting for
+      // it to clear would trap the position forever. Kept separate so the caller
+      // can keep trading (and therefore selling) instead of freezing.
+      if (t.chainlinkFeed === null) unpricedByDesign.push(t.symbol);
+      else missingPrice.push(t.symbol);
       return;
     }
 
@@ -117,5 +131,5 @@ export async function readPositions(
       valueUsdg: positionValueUsdg({ rawBalance, uiMultiplier, price8: price.price8 }),
     });
   });
-  return { positions, missingPrice };
+  return { positions, missingPrice, unpricedByDesign };
 }

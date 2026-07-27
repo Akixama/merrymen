@@ -60,6 +60,11 @@ const tok = (symbol: string, address: `0x${string}`): StockToken => ({
   chainlinkFeed: "0x0000000000000000000000000000000000000001",
   kind: "stock",
 });
+/** No feed configured at all — every memecoin, and any delisted feed. */
+const feedless = (symbol: string, address: `0x${string}`): StockToken => ({
+  ...tok(symbol, address),
+  chainlinkFeed: null,
+});
 const AAPL = tok("AAPL", "0x00000000000000000000000000000000000000a1");
 const TSLA = tok("TSLA", "0x00000000000000000000000000000000000000b2");
 const good = (result: unknown) => ({ status: "success" as const, result });
@@ -116,5 +121,57 @@ describe("readPositions — a held holding is never silently valued at zero", ()
     const r = await readPositions(broken, ACCT, [AAPL], new Map());
     assert.deepEqual(r.positions, []);
     assert.deepEqual(r.missingPrice, []);
+    assert.deepEqual(r.unpricedByDesign, []);
+  });
+});
+
+/**
+ * A feed that FAILED is transient — hold and retry. A feed that doesn't EXIST
+ * never recovers, and treating the two alike froze the tick permanently: no
+ * equity, no breaker, no strategy run, and therefore no way to sell out of the
+ * position. Every memecoin is in the second category, so this distinction is
+ * what makes holding one survivable at all.
+ */
+describe("readPositions — a missing feed is not a failed feed", () => {
+  const DOGE = feedless("DOGE", "0x00000000000000000000000000000000000000c3");
+
+  it("a held token with NO feed configured is unpricedByDesign, not missingPrice", async () => {
+    const r = await readPositions(client([good(5n * ONE), good(ONE)]), ACCT, [DOGE], new Map());
+    assert.deepEqual(r.unpricedByDesign, ["DOGE"], "permanent condition, reported as such");
+    assert.deepEqual(r.missingPrice, [], "must NOT look like a transient hiccup");
+    assert.deepEqual(r.positions, [], "still not valued — we genuinely don't know what it's worth");
+  });
+
+  it("a held token WITH a feed that didn't read stays transient", async () => {
+    const r = await readPositions(client([good(5n * ONE), good(ONE)]), ACCT, [AAPL], new Map());
+    assert.deepEqual(r.missingPrice, ["AAPL"]);
+    assert.deepEqual(r.unpricedByDesign, []);
+  });
+
+  it("separates the two when both are held at once", async () => {
+    const r = await readPositions(
+      client([good(ONE), good(ONE), good(2n * ONE), good(ONE)]),
+      ACCT,
+      [AAPL, DOGE],
+      new Map(), // neither priced
+    );
+    assert.deepEqual(r.missingPrice, ["AAPL"], "feed exists → retry");
+    assert.deepEqual(r.unpricedByDesign, ["DOGE"], "no feed → don't wait, don't freeze");
+  });
+
+  it("a feedless token that is NOT held is simply absent", async () => {
+    const r = await readPositions(client([good(0n), good(ONE)]), ACCT, [DOGE], new Map());
+    assert.deepEqual(r.unpricedByDesign, [], "nothing held, nothing to report");
+    assert.deepEqual(r.missingPrice, []);
+  });
+
+  it("a feedless token still values normally if a price IS supplied (e.g. a DEX quote)", async () => {
+    // The seam for Phase 3: once a non-Chainlink price source exists, feeding it
+    // through this same map values the position with no further changes here.
+    const prices = new Map([["DOGE", { price8: usd(0.42), stale: false }]]);
+    const r = await readPositions(client([good(100n * ONE), good(ONE)]), ACCT, [DOGE], prices);
+    assert.equal(r.positions.length, 1);
+    assert.equal(r.positions[0]?.symbol, "DOGE");
+    assert.deepEqual(r.unpricedByDesign, []);
   });
 });
