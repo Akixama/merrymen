@@ -55,6 +55,7 @@ import {
   chainForId,
   isValidCustomToken,
   robinhoodTestnet,
+  TRADEABLE_V2,
   USDG_DECIMALS,
   type CustomToken,
   type GrantCaps,
@@ -283,7 +284,11 @@ async function mintGrant(
     grantedAt: now,
     expiresAt,
     chainId: chain.id,
-    grantFeatures: ["transfer"],
+    // TRADEABLE_V2 says this signature carries the WIDE stock allowlist. Without
+    // it the worker assumes the legacy three — because a grant signed before the
+    // list grew genuinely only has those three in its call policy, and crediting
+    // it with more is how a position gets bought and never sold.
+    grantFeatures: ["transfer", TRADEABLE_V2],
     // What this signature ACTUALLY covers — the worker compares it against the
     // owner's configured tokens and says so when they've drifted apart.
     grantTokens: dedupedExtras.map((t) => t.address.toLowerCase()),

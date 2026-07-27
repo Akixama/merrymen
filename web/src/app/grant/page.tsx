@@ -10,6 +10,7 @@ import {
   robinhoodChain,
   robinhoodTestnet,
   tokenCoverage,
+  uncoveredBasketSymbols,
   type CustomToken,
 } from "@merrymen/core";
 import {
@@ -122,6 +123,9 @@ export default function GrantPage() {
   // listed — the tradable set lives inside the signed session key, so listing a
   // token only takes effect when a grant covering it is signed here.
   const [customTokens, setCustomTokens] = useState<CustomToken[]>([]);
+  // The basket matters here for the same reason: /settings offers every registry
+  // symbol, but only the ones sealed into the signature can be sold.
+  const [basketSymbols, setBasketSymbols] = useState<string[]>([]);
 
   useEffect(() => {
     setGrant(loadGrant());
@@ -132,11 +136,15 @@ export default function GrantPage() {
       .catch(() => setServerArmed(null));
     fetch("/api/settings")
       .then((r) => (r.ok ? r.json() : null))
-      .then((v: { values?: { customTokens?: unknown[] } } | null) => {
+      .then((v: { values?: { customTokens?: unknown[]; basketSymbols?: string[] }; defaults?: { basketSymbols?: string[] } } | null) => {
         const list = (v?.values?.customTokens ?? []).filter(isValidCustomToken);
         setCustomTokens(list as CustomToken[]);
+        setBasketSymbols(v?.values?.basketSymbols ?? v?.defaults?.basketSymbols ?? []);
       })
-      .catch(() => setCustomTokens([]));
+      .catch(() => {
+        setCustomTokens([]);
+        setBasketSymbols([]);
+      });
   }, []);
 
   /** Re-push the stored grant so the worker obeys it again (undo a desync). */
@@ -180,7 +188,12 @@ export default function GrantPage() {
   // Settings can't reach into an already-signed key, so the gap is real: without
   // a re-sign the agent would watch the token and then revert at the wall when
   // it tried to sell. Better to say so here than to discover it as a failed op.
-  const uncoveredTokens = grant ? tokenCoverage(customTokens, grant).uncovered : [];
+  const uncoveredNames = grant
+    ? [
+        ...uncoveredBasketSymbols(basketSymbols, grant),
+        ...tokenCoverage(customTokens, grant).uncovered.map((t) => t.symbol),
+      ]
+    : [];
 
   const isMainnet = chainId === MAINNET;
   // Mainnet is real money — the create button stays locked until the user
@@ -670,17 +683,21 @@ export default function GrantPage() {
             {/* Tokens added in settings after this key was signed. The wall can't
                 widen without a signature — that's the point — so say it plainly
                 and put the fix one click away. */}
-            {uncoveredTokens.length > 0 && grant.demoOwnerPrivateKey && (
+            {uncoveredNames.length > 0 && grant.demoOwnerPrivateKey && (
               <div className="renew-note">
                 🔒 <b>
-                  {uncoveredTokens.length === 1 ? "One token you added isn't" : `${uncoveredTokens.length} tokens you added aren't`}
+                  {uncoveredNames.length === 1
+                    ? "One token in your basket isn't"
+                    : `${uncoveredNames.length} tokens in your basket aren't`}
                 </b>{" "}
                 covered by your agent&apos;s current key:{" "}
-                <span className="mono">{uncoveredTokens.map((t) => t.symbol).join(", ")}</span>. The
-                tradable list is sealed into the signature, so adding a token in settings can&apos;t
-                widen it — your merryman can watch{" "}
-                {uncoveredTokens.length === 1 ? "it" : "them"} but couldn&apos;t sell{" "}
-                {uncoveredTokens.length === 1 ? "it" : "them"} back out.
+                <span className="mono">{uncoveredNames.join(", ")}</span>. The tradable list is
+                sealed into the signature when you sign it, so neither adding a token nor a new pool
+                appearing can widen it.
+                <br />
+                Your merryman <b>won&apos;t buy {uncoveredNames.length === 1 ? "it" : "them"}</b> until
+                you re-sign — buying something it can&apos;t sell back would leave you holding a
+                position with no way out, and no cap protects you from that.
                 <br />
                 Re-signing fixes it: same wallet, same funds, same caps, free and instant.
                 <button
@@ -689,7 +706,7 @@ export default function GrantPage() {
                   onClick={() => void renewKey()}
                   disabled={renewing}
                 >
-                  {renewing ? "re-signing…" : `re-sign to cover ${uncoveredTokens.map((t) => t.symbol).join(", ")}`}
+                  {renewing ? "re-signing…" : `re-sign to cover ${uncoveredNames.join(", ")}`}
                 </button>
               </div>
             )}

@@ -255,3 +255,64 @@ describe("checkPolicy", () => {
     assert.equal(!throttled.ok && throttled.rule, "ops-cap");
   });
 });
+
+/**
+ * NEVER ENTER A POSITION THE KEY CANNOT EXIT.
+ *
+ * Buying spends USDG, and approving USDG is one generic permission every grant
+ * carries. Selling needs a per-token approve sealed into the signature. So a
+ * token with a live pool but no approve permission buys fine and can never be
+ * sold — the exit reverts at the wall, with the owner's money inside.
+ *
+ * This is not hypothetical. On 2026-07-27, eleven registry stocks (AAPL, MSFT,
+ * SPY and friends) had live pools while the signed allowlist still read
+ * QQQ/NVDA/TSLA, and /settings offered every one of them as a basket option.
+ */
+describe("checkPolicy — the no-exit rule", () => {
+  const CATE = "0x5555555555555555555555555555555555555555" as const;
+  const sellable = (...a: string[]) => limits({ allowedAssets: [USDG, AAPL, CATE], sellableAssets: a });
+
+  it("REFUSES a buy the key cannot sell back", () => {
+    const v = checkPolicy(swap({ buyToken: CATE }), sellable(USDG, AAPL), state());
+    assert.equal(v.ok, false);
+    assert.equal(v.ok === false && v.rule, "no-exit");
+  });
+
+  it("allows the buy once the grant covers it", () => {
+    assert.equal(checkPolicy(swap({ buyToken: CATE }), sellable(USDG, AAPL, CATE), state()).ok, true);
+  });
+
+  it("NEVER blocks a sell — an exit must always be attemptable", () => {
+    // CATE is not sellable per the grant, but the agent is holding it and
+    // trying to get out. Refusing here would be the trap, not the guard.
+    const v = checkPolicy(
+      swap({ sellToken: CATE, buyToken: USDG }),
+      sellable(USDG, AAPL),
+      state(),
+    );
+    assert.equal(v.ok, true, "the wall may reject it on-chain, but policy must let it try");
+  });
+
+  it("matches addresses case-insensitively", () => {
+    const v = checkPolicy(swap({ buyToken: CATE }), sellable(USDG, CATE.toUpperCase()), state());
+    assert.equal(v.ok, true);
+  });
+
+  it("is inert when sellableAssets is absent — backtests and fixtures are unaffected", () => {
+    const noSet = limits({ allowedAssets: [USDG, AAPL, CATE] });
+    assert.equal(noSet.sellableAssets, undefined);
+    assert.equal(checkPolicy(swap({ buyToken: CATE }), noSet, state()).ok, true);
+  });
+
+  it("still runs the asset allowlist first — an unlisted token fails on that, not this", () => {
+    const v = checkPolicy(swap({ buyToken: EVIL }), sellable(USDG, AAPL, EVIL), state());
+    assert.equal(v.ok === false && v.rule, "asset-allowlist");
+  });
+
+  it("refuses the buy BEFORE the position exists, not after", () => {
+    // The on-chain policy would only reject the SELL — by which point the money
+    // is already in the asset. Catching it here is the only free moment.
+    const v = checkPolicy(swap({ buyToken: CATE }), sellable(USDG), state());
+    assert.equal(v.ok === false && v.detail.includes("never closed"), true);
+  });
+});

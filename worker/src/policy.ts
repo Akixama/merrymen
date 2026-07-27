@@ -18,6 +18,20 @@ export interface AgentLimits {
   allowedTargets: readonly `0x${string}`[];
   /** Allowed token addresses the agent may hold or trade. */
   allowedAssets: readonly `0x${string}`[];
+  /**
+   * Token addresses the SIGNED KEY can actually approve for a sell — i.e. what
+   * it can get back OUT of. Distinct from allowedAssets, which is only what the
+   * owner pointed the agent at.
+   *
+   * These diverge for a real and previously costly reason: approving USDG is a
+   * single generic permission, so a BUY works for any token with a pool, while
+   * a SELL needs a per-token approve baked into the signature at signing time.
+   * A token in the first set but not the second is a one-way door.
+   *
+   * Undefined disables the check — for callers (backtests, fixtures) that have
+   * no grant to reason about. Never leave it undefined on a live path.
+   */
+  sellableAssets?: readonly string[];
   /** Drawdown (bps from high-water mark) at which the breaker pauses the agent. */
   maxDrawdownBps: number;
   /** Unix seconds after which the session key is dead regardless of anything. */
@@ -100,6 +114,32 @@ export function checkPolicy(intent: TradeIntent, limits: AgentLimits, state: Age
     for (const token of [intent.sellToken, intent.buyToken]) {
       if (!limits.allowedAssets.map(lc).includes(lc(token))) {
         return { ok: false, rule: "asset-allowlist", detail: `asset ${token} not allowed` };
+      }
+    }
+
+    // NEVER ENTER A POSITION THE KEY CANNOT EXIT.
+    //
+    // Buying spends USDG, which every grant can approve generically; selling
+    // needs a per-token approve sealed into the signature. So a token with a
+    // live pool but no approve permission buys fine and can never be sold —
+    // the exit reverts at the wall, and no cap or breaker helps, because the
+    // owner's money is in an asset the agent has no way to give back.
+    //
+    // This is checked here rather than left to the on-chain policy on purpose:
+    // on-chain, the failure lands on the SELL, long after the buy succeeded and
+    // the position exists. Refusing the buy is the only moment it's still free.
+    //
+    // Sells are never blocked by this rule — an exit must always be attemptable.
+    if (limits.sellableAssets) {
+      const sellable = limits.sellableAssets.map(lc);
+      if (!sellable.includes(lc(intent.buyToken))) {
+        return {
+          ok: false,
+          rule: "no-exit",
+          detail:
+            `refusing to buy ${intent.buyToken}: this key can't approve it for a sell, ` +
+            `so the position could be opened and never closed. Re-sign the grant at /grant to cover it.`,
+        };
       }
     }
   }

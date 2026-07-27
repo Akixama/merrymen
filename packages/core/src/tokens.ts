@@ -145,18 +145,52 @@ export const STOCK_TOKENS: StockToken[] = [
 ];
 
 /**
- * Stock tokens with a live Uniswap v3 pool on Robinhood Chain — the ONLY tokens
- * merrymen can actually swap today (it executes on Uniswap v3). Verified via
- * QuoterV2 across the 500/3000/10000 fee tiers on 2026-07-16: QQQ, NVDA, TSLA
- * route; AAPL/MSFT/AMZN/PLTR/SPCX/SPY (and others) have NO v3 pool — they trade on
- * Uniswap v4 + Doppler and no-route on v3 until a Rialto or v4 path is wired up.
+ * Stock tokens the grant's call policy may approve for a SELL. Every entry was
+ * verified via QuoterV2 across the 500/3000/10000 fee tiers on **2026-07-27**,
+ * in BOTH directions — a buy that quotes and a sell that doesn't is a trap, not
+ * a feature.
  *
- * Single source of truth: the default basket (SETTINGS_DEFAULTS.basketSymbols) and
- * the grant's on-chain sell-approval allowlist (web/src/lib/session.ts) are both
- * drawn from this set, so a fresh agent can actually buy AND sell out of the box.
- * Re-run the routing check and extend this as more pools are seeded.
+ * THIS LIST GOES STALE, AND THAT USED TO COST PEOPLE MONEY. It last read
+ * QQQ/NVDA/TSLA (checked 2026-07-16); eleven days later AAPL, AMZN, GOOGL,
+ * MSFT, MU, SPCX, USAR, SGOV, SLV, SPY and USO all had live pools. Meanwhile
+ * /settings offered every registry symbol as a basket option and approving USDG
+ * is generic, so an owner could pick AAPL, watch the agent buy it, and never be
+ * able to sell — the exit reverted at the wall, silently, until they tried.
+ *
+ * Widening the list fixes today. What stops it recurring is the runtime rule in
+ * worker/src/policy.ts: a BUY is refused unless the signed key can sell that
+ * token back. Never enter a position you cannot exit — so the next pool seeded
+ * on this chain is a missed opportunity, never a trapped position.
+ *
+ * Re-verify with `npx tsx scripts/probe-tradability.mts` and extend as pools
+ * appear. Tokens still absent (BABA, BE, COIN, CRCL, CRWV, INTC, META, ORCL,
+ * PLTR, SNDK) have no v3 pool at all, so they no-route on both sides — visibly
+ * skipped, never held.
  */
-export const TRADEABLE_SYMBOLS = ["QQQ", "NVDA", "TSLA"] as const;
+export const TRADEABLE_SYMBOLS = [
+  "AAPL", "AMZN", "GOOGL", "MSFT", "MU", "NVDA", "SPCX", "TSLA", "USAR",
+  "QQQ", "SGOV", "SLV", "SPY", "USO",
+] as const;
+
+/**
+ * What grants issued BEFORE 2026-07-27 baked into their call policy.
+ *
+ * The tradable set is sealed into a signed session key, so widening the list
+ * above does nothing for a key that was already signed — and assuming otherwise
+ * is precisely the trap this release fixes. A grant declares which set it
+ * carries via the "tradeable-v2" entry in grantFeatures; without it, this is the
+ * set, and the worker says so instead of letting a sell revert at the wall.
+ */
+export const LEGACY_TRADEABLE_SYMBOLS = ["QQQ", "NVDA", "TSLA"] as const;
+
+/**
+ * What a FRESH agent buys out of the box — deliberately not the whole tradable
+ * set. These are two different questions and coupling them was a shortcut: the
+ * allowlist should cover everything with an exit, while the default basket stays
+ * a handful of the deepest names rather than spreading a first deposit across
+ * fourteen legs. Owners widen it themselves in /settings.
+ */
+export const DEFAULT_BASKET_SYMBOLS = ["QQQ", "NVDA", "TSLA"] as const;
 
 /** Minimal Stock ABI — the surface merrymen reads. Extracted from verified source 2026-07-09. */
 export const STOCK_ABI = [

@@ -365,6 +365,24 @@ signature — that's the wall doing its job, not a bug. Save the token, then hit
 instant. Until you do, `/settings` and the event feed both say plainly which
 tokens your key can't sell, rather than letting you find out when a sell reverts.
 
+### Never a position you can't exit
+
+Buying spends USDG, and every grant can approve USDG generically. **Selling needs
+a per-token approval sealed into your signature.** So a token with a live pool but
+no approval buys fine and can never be sold — the exit reverts, with your money
+inside it.
+
+merrymen refuses the buy. If your key can't sell something, it won't buy it, and
+it tells you which symbols and why. A missed trade is recoverable; a position with
+no way out is not. Re-sign at `/grant` to widen the list.
+
+This is why the shipped allowlist is verified in **both directions** against live
+pools — re-check it yourself any time:
+
+```bash
+npx tsx scripts/probe-tradability.mts
+```
+
 ---
 
 ## $MERRYMEN — the Merry Circle

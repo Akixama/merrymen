@@ -9,7 +9,7 @@
  * returns only { set, hint } for them.
  */
 
-import { TRADEABLE_SYMBOLS } from "./tokens";
+import { DEFAULT_BASKET_SYMBOLS } from "./tokens";
 
 export interface MerrymenSettings {
   // ── connections ────────────────────────────────────────────────────────
@@ -214,9 +214,10 @@ export const SETTINGS_DEFAULTS = {
   slippageBps: 100,
   perfFeeBps: 1000,
   tickSeconds: 60,
-  // Only tokens with a live Uniswap v3 pool — otherwise a fresh agent's buys
-  // all no-route. See TRADEABLE_SYMBOLS in tokens.ts.
-  basketSymbols: [...TRADEABLE_SYMBOLS] as string[],
+  // A handful of the deepest names, NOT the whole tradable set — spreading a
+  // first deposit across fourteen legs is worse, not more diversified. See
+  // DEFAULT_BASKET_SYMBOLS in tokens.ts.
+  basketSymbols: [...DEFAULT_BASKET_SYMBOLS] as string[],
   customTokens: [] as { symbol: string; address: string; decimals: number }[],
   // $25k of depth and a 5% spot/TWAP band. Deliberately strict: live pools on
   // this chain run from ~$3k (trivially pushed) to ~$1.2M, so this admits the

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { LogoMark } from "@/components/Logo";
-import { isValidCustomToken, type CustomToken } from "@merrymen/core";
+import { isValidCustomToken, uncoveredBasketSymbols, type CustomToken, type StoredGrant } from "@merrymen/core";
 import type { SettingsView } from "@/app/api/settings/route";
 import type { TelegramStatus } from "@/app/api/telegram/route";
 
@@ -60,6 +60,9 @@ export default function SettingsPage() {
   const [tokens, setTokens] = useState<CustomToken[] | null>(null);
   const [newToken, setNewToken] = useState({ symbol: "", address: "", decimals: "18" });
   const [tokenError, setTokenError] = useState<string | null>(null);
+  // The grant the browser holds, so the basket can say which symbols this
+  // signature can actually get back out of. null = none stored yet.
+  const [storedGrant, setStoredGrant] = useState<StoredGrant | null>(null);
 
   const loadTelegram = () =>
     fetch("/api/telegram")
@@ -68,6 +71,12 @@ export default function SettingsPage() {
       .catch(() => {});
 
   useEffect(() => {
+    try {
+      const raw = localStorage.getItem("merrymen.grant.v1");
+      if (raw) setStoredGrant(JSON.parse(raw) as StoredGrant);
+    } catch {
+      /* no grant, or unreadable — the basket just won't annotate */
+    }
     void (async () => {
       try {
         const res = await fetch("/api/settings");
@@ -197,6 +206,9 @@ export default function SettingsPage() {
   const activeSymbols = symbols ?? view.values.basketSymbols ?? d.basketSymbols;
   const activeTokens =
     tokens ?? ((view.values.customTokens as CustomToken[] | undefined) ?? []);
+  // Read the grant straight from localStorage — this page has no other handle on
+  // it, and what matters is the signature the browser actually holds.
+  const unsellable = uncoveredBasketSymbols(activeSymbols, storedGrant);
   const secretPlaceholder = (s: { set: boolean; hint: string | null }) =>
     s.set ? `saved ····${s.hint ?? ""} — type to replace` : "not set";
 
@@ -389,6 +401,17 @@ export default function SettingsPage() {
               ? "select at least one symbol (empty falls back to the default basket)"
               : `trading ${activeSymbols.join(" · ")}`}
           </div>
+          {/* Selecting a symbol the signed key can't sell used to mean buying a
+              position with no exit. The buy is refused now, but say why here —
+              at the moment of choosing — rather than in the event feed later. */}
+          {unsellable.length > 0 && (
+            <div className="grant-note err">
+              Your agent&apos;s key can&apos;t sell <b>{unsellable.join(", ")}</b>, so it won&apos;t
+              buy {unsellable.length === 1 ? "it" : "them"} either — a position with no way out is
+              worse than a missed trade. Re-sign at <Link href="/grant">/grant</Link> to include{" "}
+              {unsellable.length === 1 ? "it" : "them"} (free, same wallet, same funds).
+            </div>
+          )}
 
           {/* ── OWNER-ADDED TOKENS (memecoins) ─────────────────────────────
               Deliberately separate from the basket: those are issuer-backed

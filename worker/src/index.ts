@@ -43,7 +43,9 @@ import {
   effectivePerfFeeBps,
   pimlicoBundlerUrl,
   robinhoodTestnet,
+  sellableAssets,
   tokenCoverage,
+  uncoveredBasketSymbols,
   type CircleTier,
   type PriceQuote,
   type StockToken,
@@ -130,6 +132,9 @@ function limitsFromGrant(grant: StoredGrant, watchTokens: readonly StockToken[])
       CASH.USDG as `0x${string}`,
     ],
     allowedAssets: [CASH.USDG as `0x${string}`, ...watchTokens.map((t) => t.address)],
+    // What this SIGNATURE can sell, which is not the same as what the owner
+    // pointed the agent at — see the no-exit rule in policy.ts.
+    sellableAssets: [...sellableAssets(grant)],
     maxDrawdownBps: grant.caps.maxDrawdownPct * 100,
     expiresAt: grant.expiresAt,
     maxOpsPerDay: grant.caps.maxOpsPerDay,
@@ -358,21 +363,25 @@ async function main() {
    */
   let lastCoverageKey: string | null = null;
   async function noteTokenCoverage(agentId: string): Promise<void> {
-    const { uncovered } = tokenCoverage(cfg.customTokens, active?.grant ?? null);
-    const key = uncovered
-      .map((t) => t.address.toLowerCase())
-      .sort()
-      .join(",");
+    const grant = active?.grant ?? null;
+    const { uncovered } = tokenCoverage(cfg.customTokens, grant);
+    // Registry symbols matter just as much, and used to matter MORE: /settings
+    // offers every one of them, so an owner could select a stock the signature
+    // couldn't sell without ever touching the custom-token flow.
+    const uncoveredStocks = uncoveredBasketSymbols(cfg.basketSymbols, grant);
+    const names = [...uncoveredStocks, ...uncovered.map((t) => t.symbol)];
+    const key = names.slice().sort().join(",");
     if (key === lastCoverageKey) return;
     lastCoverageKey = key;
-    if (!uncovered.length) return;
-    const names = uncovered.map((t) => t.symbol).join(", ");
-    console.log(`[worker] grant does not cover ${names} — re-sign at /grant to trade them`);
+    if (!names.length) return;
+    const list = names.join(", ");
+    console.log(`[worker] grant does not cover ${list} — re-sign at /grant to trade them`);
     await addEvent(
       agentId,
       "warn",
-      `your key can't sell ${names} — the tradable list is sealed into the signature, ` +
-        `so adding a token in settings doesn't widen it. Re-sign at /grant (free, same wallet, same funds).`,
+      `your key can't sell ${list}, so buys of ${names.length === 1 ? "it are" : "them are"} refused — ` +
+        `entering a position you can't exit is the one thing no cap protects you from. ` +
+        `The tradable list is sealed into the signature; re-sign at /grant (free, same wallet, same funds).`,
     );
   }
 

@@ -1,6 +1,23 @@
 /** Grant shapes shared by web (issuer) and worker (consumer). */
 
-import { CASH, STOCK_TOKENS, TRADEABLE_SYMBOLS, type CustomToken } from "./tokens";
+import {
+  CASH,
+  LEGACY_TRADEABLE_SYMBOLS,
+  STOCK_TOKENS,
+  TRADEABLE_SYMBOLS,
+  type CustomToken,
+} from "./tokens";
+
+/**
+ * grantFeatures marker meaning "this signature carries the WIDE tradable set".
+ *
+ * TRADEABLE_SYMBOLS grows as pools are seeded, but a session key signed last
+ * month has last month's list sealed into its call policy. Reading the current
+ * constant and assuming an old grant covers it is exactly the bug that let a
+ * position be bought and never sold — so the grant declares what it carries,
+ * and code that needs to know asks the grant, not the constant.
+ */
+export const TRADEABLE_V2 = "tradeable-v2";
 
 export interface GrantCaps {
   perTradeUsdg: number;
@@ -58,13 +75,31 @@ export interface StoredGrant {
  * to warn about — if those two lists drifted, the warning would be wrong in one
  * direction or the other.
  */
-export function builtinGrantTargets(): Set<string> {
+export function builtinGrantTargets(grant?: Pick<StoredGrant, "grantFeatures"> | null): Set<string> {
+  // No grant supplied = "what would a grant signed RIGHT NOW carry" — the
+  // issuer's question. With a grant, the answer is whatever THAT signature
+  // sealed, which for anything older than 2026-07-27 is the legacy three.
+  const symbols =
+    grant === undefined || grant?.grantFeatures?.includes(TRADEABLE_V2)
+      ? (TRADEABLE_SYMBOLS as readonly string[])
+      : (LEGACY_TRADEABLE_SYMBOLS as readonly string[]);
   return new Set<string>([
     (CASH.USDG as string).toLowerCase(),
-    ...STOCK_TOKENS.filter((t) => (TRADEABLE_SYMBOLS as readonly string[]).includes(t.symbol)).map(
-      (t) => t.address.toLowerCase(),
-    ),
+    ...STOCK_TOKENS.filter((t) => symbols.includes(t.symbol)).map((t) => t.address.toLowerCase()),
   ]);
+}
+
+/**
+ * Every token address this signature can approve for a SELL: the built-in set
+ * it carries, plus any owner-added extras baked in at signing time.
+ *
+ * This is the set the worker checks a BUY against. Entering a position the key
+ * cannot exit is the one outcome no cap protects you from.
+ */
+export function sellableAssets(grant: Pick<StoredGrant, "grantFeatures" | "grantTokens"> | null): Set<string> {
+  const set = builtinGrantTargets(grant);
+  for (const a of grant?.grantTokens ?? []) set.add(a.toLowerCase());
+  return set;
 }
 
 /**
@@ -75,15 +110,33 @@ export function builtinGrantTargets(): Set<string> {
  */
 export function tokenCoverage(
   configured: readonly CustomToken[],
-  grant: Pick<StoredGrant, "grantTokens"> | null | undefined,
+  grant: Pick<StoredGrant, "grantTokens" | "grantFeatures"> | null | undefined,
 ): { covered: CustomToken[]; uncovered: CustomToken[] } {
-  const builtin = builtinGrantTargets();
-  const granted = new Set((grant?.grantTokens ?? []).map((a) => a.toLowerCase()));
+  // Pass the grant through, not `undefined` — asking what THIS signature covers,
+  // not what a fresh one would.
+  const sellable = sellableAssets(grant ?? null);
   const covered: CustomToken[] = [];
   const uncovered: CustomToken[] = [];
   for (const t of configured) {
-    const key = t.address.toLowerCase();
-    (builtin.has(key) || granted.has(key) ? covered : uncovered).push(t);
+    (sellable.has(t.address.toLowerCase()) ? covered : uncovered).push(t);
   }
   return { covered, uncovered };
+}
+
+/**
+ * Registry symbols the owner has selected that this grant cannot sell.
+ *
+ * The settings UI offers every symbol in the registry, but only the ones baked
+ * into the signature can be approved for a sell — and approving USDG is generic,
+ * so the buy side works regardless. That asymmetry is what let someone pick AAPL
+ * and end up holding it forever. Reported, and refused at the wall.
+ */
+export function uncoveredBasketSymbols(
+  basketSymbols: readonly string[],
+  grant: Pick<StoredGrant, "grantFeatures" | "grantTokens"> | null | undefined,
+): string[] {
+  const sellable = sellableAssets(grant ?? null);
+  return STOCK_TOKENS.filter(
+    (t) => basketSymbols.includes(t.symbol) && !sellable.has(t.address.toLowerCase()),
+  ).map((t) => t.symbol);
 }
