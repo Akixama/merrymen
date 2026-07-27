@@ -10,7 +10,7 @@ process.env.MERRYMEN_GATEWAY_SECRET ||= "test-secret-at-least-32-bytes-long-for-
 process.env.MERRYMEN_GATEWAY_RPC ||= "https://example.invalid";
 
 import assert from "node:assert/strict";
-import { createGateway } from "./lib/core.mjs";
+import { createGateway, DEFAULTS } from "./lib/core.mjs";
 import { createStore } from "./lib/store.mjs";
 
 const SECRET = process.env.MERRYMEN_GATEWAY_SECRET;
@@ -67,3 +67,74 @@ const message = claimMessage(ADDR, n);
 assert.ok(message.includes(`Nonce: ${n}`) && message.includes("Domain: merrymen.dev"), "the signed message binds a fresh nonce + the domain");
 
 console.log("[gateway] selftest OK — shared core: token scheme + single-use nonce + replay protection verified");
+
+// ── /bitquery: the catalogue IS the attack surface ───────────────────────────
+// Bitquery bills by query cost and GraphQL is unbounded, so the one thing that
+// must never be true is "a caller can choose the query". These assertions are
+// the whole safety argument for putting an operator's paid key behind a public
+// endpoint, so they check refusal FIRST and reachability second.
+const holderClient = { readContract: async () => 10_000n * 10n ** 18n };
+const bq = createGateway({
+  ...baseCfg,
+  secret: SECRET,
+  store,
+  bitqueryKey: "test-bitquery-key",
+  bitqueryUrl: "https://example.invalid/graphql",
+  publicClient: holderClient,
+  // Raised so the refusal assertions below can all run; the real (tighter)
+  // default is asserted separately at the end.
+  tunables: { BITQUERY_RATE_PER_MIN: 1000 },
+});
+const goodToken = bq._tokens.issueToken(ADDR);
+
+assert.equal(
+  (await bq.bitquery({ token: "mmk_nope.bad", body: { query: "ping" }, ip: "1.1.1.1" })).status,
+  401,
+  "an unsigned token can't reach the operator's Bitquery key",
+);
+
+// Raw GraphQL must be refused BY NAME LOOKUP — not sanitised, not escaped.
+for (const attempt of [
+  "{ EVM(network: robinhood) { Blocks { Block { Number } } } }",
+  "query { __schema { types { name } } }",
+  "ping\n{ evil }",
+  "__proto__",
+  "constructor",
+  "toString",
+  "",
+  null,
+  undefined,
+  42,
+  { nested: true },
+]) {
+  const r = await bq.bitquery({ token: goodToken, body: { query: attempt }, ip: "1.1.1.1" });
+  assert.equal(r.status, 400, `raw/hostile query must be rejected: ${String(attempt).slice(0, 30)}`);
+  assert.ok(Array.isArray(r.json.available), "the refusal names what IS allowed");
+}
+
+// Prototype keys must not resolve to inherited Object members.
+assert.deepEqual(
+  bq.bitqueryQueries().sort(),
+  ["ping", "recentPools"],
+  "the catalogue is exactly what's declared — nothing inherited",
+);
+
+// A gateway with no Bitquery key configured refuses the route outright rather
+// than failing somewhere upstream with the operator's other credentials in play.
+const noKey = createGateway({ ...baseCfg, secret: SECRET, store, publicClient: holderClient });
+assert.equal(
+  (await noKey.bitquery({ token: noKey._tokens.issueToken(ADDR), body: { query: "ping" }, ip: "2.2.2.2" })).status,
+  503,
+  "no key configured = 503, not a confusing upstream error",
+);
+
+// Discovery gets its own bucket, tighter than chat: a polled background feed
+// must not be able to eat the allowance the holder's brain also depends on.
+const rated = createGateway({ ...baseCfg, secret: SECRET, store, bitqueryKey: "k", bitqueryUrl: "https://example.invalid/graphql", publicClient: holderClient, tunables: { BITQUERY_RATE_PER_MIN: 2 } });
+const rt = rated._tokens.issueToken(OTHER);
+assert.equal((await rated.bitquery({ token: rt, body: { query: "ping" }, ip: "3.3.3.3" })).status !== 429, true, "first discovery call is allowed");
+await rated.bitquery({ token: rt, body: { query: "ping" }, ip: "3.3.3.3" });
+assert.equal((await rated.bitquery({ token: rt, body: { query: "ping" }, ip: "3.3.3.3" })).status, 429, "discovery is rate-limited per address");
+assert.ok(DEFAULTS.BITQUERY_RATE_PER_MIN < DEFAULTS.RATE_PER_MIN, "discovery is limited harder than chat by default");
+
+console.log("[gateway] selftest OK — /bitquery: named queries only, no raw GraphQL, key-gated, own rate bucket");

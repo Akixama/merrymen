@@ -19,7 +19,18 @@ export const DEFAULTS = {
   MAX_COMPLETION_TOKENS: 2048, // hard clamp on client-requested output length
   RATE_PER_MIN: 60, // per-address on /v1, per-IP on /nonce + /claim
   BALANCE_TTL_SEC: 10 * 60, // re-check holdings at most this often
+  // Discovery is polled by a worker on a timer, not driven by a human typing, so
+  // it gets its OWN tighter bucket. Sharing the chat allowance would let a
+  // background poll quietly starve the brain the same holder is paying for.
+  BITQUERY_RATE_PER_MIN: 6,
 };
+
+/** Clamp a client-supplied integer into a server-decided range. */
+export function clampInt(v, min, max, fallback) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(n)));
+}
 
 /** Best-effort client IP: first X-Forwarded-For hop, else the socket peer. */
 export function clientIp(xff, remote) {
@@ -32,6 +43,10 @@ export function createGateway(cfg) {
     secret,
     upstreamUrl,
     upstreamKey,
+    /** Bitquery key — optional. Absent = the /bitquery route reports 503, and
+     * the rest of the gateway works exactly as before. */
+    bitqueryKey,
+    bitqueryUrl = "https://streaming.bitquery.io/graphql",
     model,
     brandModel = "merrymen-fast",
     domain,
@@ -202,12 +217,118 @@ export function createGateway(cfg) {
     }
   }
 
+  /**
+   * Bitquery, for holders — the same perk shape as the brain, one hard lesson
+   * applied on top.
+   *
+   * DO NOT PROXY ARBITRARY GRAPHQL. Bitquery bills by query cost, and GraphQL is
+   * unbounded by construction: one caller asking for every event since genesis,
+   * unfiltered, is a five-figure invoice and a blank cheque written against the
+   * operator's account. `max_tokens` was enough to bound the LLM route; there is
+   * no equivalent knob here, because the expensive part is the query itself.
+   *
+   * So the client does not send a query. It sends a NAME, and the gateway owns
+   * the GraphQL. The catalogue below is the entire attack surface: every query
+   * is written here, every variable is clamped here, and a caller can ask for
+   * nothing that isn't in it. Adding a capability is a deliberate act by whoever
+   * runs the gateway, not something a client can reach for.
+   */
+  const BITQUERY_QUERIES = {
+    /** Pools initialized recently — v3 factories and the v4 PoolManager alike. */
+    recentPools: {
+      cost: 2,
+      build: (v) => ({
+        query: `query ($since: DateTime, $limit: Int) {
+          EVM(network: robinhood) {
+            Events(
+              limit: {count: $limit}
+              orderBy: {descending: Block_Time}
+              where: {Log: {Signature: {Name: {is: "Initialize"}}}, Block: {Time: {after: $since}}}
+            ) {
+              Block { Time }
+              Transaction { Hash }
+              Arguments { Name Value { ... on EVM_ABI_Address_Value_Arg { address } } }
+            }
+          }
+        }`,
+        variables: {
+          // Clamped server-side. A client asking for "since the beginning of
+          // time, limit 100000" is exactly the request that must not be possible.
+          since: new Date(Date.now() - clampInt(v.sinceMinutes, 1, 1440, 60) * 60_000).toISOString(),
+          limit: clampInt(v.limit, 1, 100, 25),
+        },
+      }),
+    },
+    /** Chain height — the cheapest possible liveness/credential check. */
+    ping: {
+      cost: 1,
+      build: () => ({
+        query: `{ EVM(network: robinhood) { Blocks(limit: {count: 1}, orderBy: {descending: Block_Number}) { Block { Number } } } }`,
+        variables: {},
+      }),
+    },
+  };
+
+  async function bitquery({ token, body, ip }) {
+    if (!bitqueryKey) {
+      return { status: 503, json: { error: "this gateway has no Bitquery key configured" } };
+    }
+    const addr = verifyToken(token);
+    if (!addr) return { status: 401, json: { error: "invalid or expired Merrymen token — re-claim at /claim" } };
+    // A SEPARATE, tighter bucket from the chat route. Discovery is polled on a
+    // timer rather than driven by a human typing, so it would otherwise quietly
+    // consume the whole per-address allowance that the brain also depends on.
+    if (!(await store.rateHit(`bq:${addr}`, T.BITQUERY_RATE_PER_MIN, 60))) {
+      return { status: 429, json: { error: "rate limit — discovery is polled, not streamed (holder quota)" } };
+    }
+    if (!(await isHolder(addr))) {
+      return { status: 403, json: { error: "this wallet no longer meets the $MERRYMEN holding requirement" } };
+    }
+    const name = body && typeof body === "object" ? body.query : null;
+    const entry = Object.prototype.hasOwnProperty.call(BITQUERY_QUERIES, name)
+      ? BITQUERY_QUERIES[name]
+      : null;
+    if (!entry) {
+      return {
+        status: 400,
+        json: {
+          error: `unknown query "${String(name).slice(0, 40)}"`,
+          available: Object.keys(BITQUERY_QUERIES),
+        },
+      };
+    }
+    const built = entry.build(body.variables && typeof body.variables === "object" ? body.variables : {});
+    try {
+      const upstream = await fetch(bitqueryUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${bitqueryKey}`,
+          "X-API-KEY": bitqueryKey,
+        },
+        body: JSON.stringify(built),
+      });
+      const text = await upstream.text();
+      // Upstream errors can quote the request, and the request carries our key
+      // in its headers on the way out. Return the status, not the body, unless
+      // the call actually succeeded.
+      if (!upstream.ok) {
+        return { status: upstream.status === 429 ? 429 : 502, json: { error: `bitquery upstream ${upstream.status}` } };
+      }
+      return { status: 200, text, contentType: "application/json" };
+    } catch {
+      return { status: 502, json: { error: "bitquery unavailable" } };
+    }
+  }
+
   return {
     health,
     serveClaimPage: (html) => ({ status: 200, html }),
     nonce,
     claim,
     chat,
+    bitquery,
+    bitqueryQueries: () => Object.keys(BITQUERY_QUERIES),
     // exposed for the standalone server + tests
     isHolder,
     _tokens: { sign, issueToken, verifyToken, issueNonce, verifyNonceAuthentic, claimMessage, clampPayload },

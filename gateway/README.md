@@ -24,6 +24,40 @@ merrymen ──Bearer token──▶ /v1/chat/completions ──your key──�
 
 Signing is **read-only proof of control** — no transaction, no private key ever leaves the holder's wallet. Fully in keeping with merrymen's non-custodial stance.
 
+## Discovery too: `POST /bitquery`
+
+Same perk, same claimed token, second upstream. Set `MERRYMEN_GATEWAY_BITQUERY_KEY`
+and holders get Bitquery — which indexes Robinhood Chain from genesis and decodes
+**Uniswap v4**, where new pairs actually launch — without a Bitquery account of
+their own. Leave it unset and the route returns 503; nothing else changes.
+
+**This route does not proxy GraphQL, and that is the whole point.** Bitquery bills
+by query cost and GraphQL is unbounded by construction: one caller asking for
+every event since genesis, unfiltered, is a five-figure invoice against *your*
+account. `max_tokens` was enough to bound the LLM route; there is no equivalent
+knob here, because the expensive part *is* the query.
+
+So the client sends a **name**, not a query:
+
+```bash
+curl -s https://ai.merrymen.dev/bitquery -H "authorization: Bearer mmk_…" \
+  -H 'content-type: application/json' -d '{"query":"recentPools","variables":{"sinceMinutes":60,"limit":25}}'
+```
+
+- The catalogue in `lib/core.mjs` (`BITQUERY_QUERIES`) **is** the attack surface.
+  Every query is written there, every variable is clamped there, and a caller can
+  ask for nothing that isn't in it. `GET /bitquery` lists the names.
+- Adding a capability is a deliberate edit by whoever runs the gateway.
+- Discovery has its **own, tighter rate bucket** (`BITQUERY_RATE_PER_MIN`, 6/min
+  per wallet) — it's polled by a worker on a timer, not driven by a human typing,
+  so sharing the chat allowance would let a background feed starve the brain.
+- Upstream error bodies are **not** relayed; they can quote the request, and the
+  request carries your key on the way out.
+
+`node selftest.mjs` asserts all of it offline: unsigned tokens rejected, raw and
+hostile queries (including `__proto__`, `constructor`) rejected by name lookup,
+503 when no key is configured, and the rate bucket biting.
+
 ## Two ways to run it
 
 The security logic lives once in `lib/core.mjs`; two thin runtimes wrap it:
@@ -31,15 +65,33 @@ The security logic lives once in `lib/core.mjs`; two thin runtimes wrap it:
 Point the client's domain — `https://ai.merrymen.dev` in the shipped provider
 (`packages/core/src/llm-providers.ts` → the `merrymen` entry) — at whichever you pick.
 
-### A) Persistent process (Railway / Fly / Render / VPS / Docker)
+### A) Persistent process (Railway / Fly / Render / VPS / Docker) — RECOMMENDED
 
 ```bash
 cd gateway
-cp .env.example .env      # fill in UPSTREAM_KEY, SECRET, RPC
+cp .env.example .env      # fill in UPSTREAM_KEY, SECRET, RPC (+ BITQUERY_KEY for discovery)
 npm install
-npm run check             # offline self-test (token scheme + single-use nonce + replay protection)
+npm run check             # offline self-test (tokens, single-use nonces, replay, /bitquery)
 npm start                 # listens on :8787
 ```
+
+**Railway**, concretely — `railway.json` is committed, so it builds from the
+Dockerfile and health-checks `/healthz` with no dashboard fiddling:
+
+```bash
+railway init && railway up
+```
+
+Then set the variables in the Railway dashboard (**not** in the repo):
+`MERRYMEN_GATEWAY_UPSTREAM_KEY`, `MERRYMEN_GATEWAY_SECRET` (32+ random bytes),
+`MERRYMEN_GATEWAY_RPC`, `MERRYMEN_GATEWAY_BITQUERY_KEY`, and
+`MERRYMEN_GATEWAY_DOMAIN` set to the host you actually serve on. Point
+`ai.merrymen.dev` at the Railway service.
+
+A single process needs no Redis — the in-memory store is correct and atomic for
+one instance. **If you scale past one replica, set `KV_REST_API_URL`/`TOKEN`**,
+or nonce single-use and rate limits become per-instance and stop meaning what
+they say.
 
 A `Dockerfile` (universal) and `render.yaml` (Render Blueprint) are included for a
 connect-the-repo deploy. In-memory state is fine here (one process); set

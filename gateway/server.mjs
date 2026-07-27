@@ -23,6 +23,7 @@ import { CLAIM_HTML } from "./lib/claimPage.mjs";
 const PORT = Number(process.env.PORT || 8787);
 const UPSTREAM_URL = process.env.MERRYMEN_GATEWAY_UPSTREAM || "https://api.groq.com/openai/v1/chat/completions";
 const UPSTREAM_KEY = process.env.MERRYMEN_GATEWAY_UPSTREAM_KEY; // REQUIRED — the real key, server-only
+const BITQUERY_KEY = process.env.MERRYMEN_GATEWAY_BITQUERY_KEY; // optional — enables /bitquery for holders
 const MODEL = process.env.MERRYMEN_GATEWAY_MODEL || "llama-3.3-70b-versatile"; // forced server-side
 const SECRET = process.env.MERRYMEN_GATEWAY_SECRET; // REQUIRED — HMAC token-signing secret (32+ random bytes)
 const RPC = process.env.MERRYMEN_GATEWAY_RPC; // REQUIRED — Robinhood Chain RPC for balanceOf
@@ -55,6 +56,7 @@ const publicClient = createPublicClient({ chain, transport: http(RPC) });
 
 const gw = createGateway({
   secret: SECRET,
+  bitqueryKey: BITQUERY_KEY,
   upstreamUrl: UPSTREAM_URL,
   upstreamKey: UPSTREAM_KEY,
   model: MODEL,
@@ -136,6 +138,24 @@ const server = createServer(async (req, res) => {
       return respond(res, await gw.chat({ token, body, ip }));
     }
 
+    // Discovery. Same holder token as the brain; a named query, never raw
+    // GraphQL — see the catalogue in lib/core.mjs for why.
+    if (req.method === "POST" && pathname === "/bitquery") {
+      const auth = req.headers["authorization"] || "";
+      const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+      let body;
+      try {
+        body = JSON.parse(await readBody(req));
+      } catch {
+        return respond(res, { status: 400, json: { error: "bad request body" } });
+      }
+      return respond(res, await gw.bitquery({ token, body, ip }));
+    }
+    // So a client can discover what this gateway will answer without guessing.
+    if (req.method === "GET" && pathname === "/bitquery") {
+      return respond(res, { status: 200, json: { queries: gw.bitqueryQueries() } });
+    }
+
     respond(res, { status: 404, json: { error: "not found" } });
   } catch {
     respond(res, { status: 500, json: { error: "internal error" } });
@@ -144,5 +164,6 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`[gateway] Merrymen AI listening on :${PORT} — model forced to "${MODEL}", min hold ${MIN_TOKENS} $MERRYMEN`);
+  console.log(`[gateway] discovery: ${BITQUERY_KEY ? "Bitquery ON (named queries only)" : "Bitquery OFF (no key set)"}`);
   if (!hasRedis) console.log("[gateway] state store: in-memory (fine for a single process; set KV_REST_API_URL/TOKEN for multi-instance).");
 });

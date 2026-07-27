@@ -32,10 +32,52 @@ export const BITQUERY_DEFAULT_ENDPOINT = "https://streaming.bitquery.io/graphql"
 /** This chain's identifier in Bitquery's EVM schema. */
 export const BITQUERY_NETWORK = "robinhood";
 
+/**
+ * The shared holder gateway. A merryman with a Merry Circle token needs no
+ * Bitquery account at all: the key lives server-side, exactly as the brain's
+ * does, and the same claimed token opens both.
+ *
+ * The gateway does NOT proxy GraphQL. It answers a fixed catalogue of named
+ * queries and builds the GraphQL itself, because query cost is the thing being
+ * billed and an open GraphQL proxy is a blank cheque written against whoever
+ * runs it. So this client sends `{query: "<name>", variables}` when it's talking
+ * to the gateway, and real GraphQL only when it's using the owner's own key.
+ */
+export const MERRYMEN_GATEWAY_BITQUERY = "https://ai.merrymen.dev/bitquery";
+
 export interface BitqueryCreds {
   apiKey: string;
   /** Override for self-hosted/enterprise endpoints, or if Bitquery moves it. */
   endpoint?: string;
+  /**
+   * True when `apiKey` is a Merry Circle gateway token rather than a Bitquery
+   * key. Changes the protocol: named queries out, no raw GraphQL, and the
+   * gateway's own rate limits apply.
+   */
+  viaGateway?: boolean;
+}
+
+/**
+ * Which credentials should this agent use?
+ *
+ * The owner's own Bitquery key always wins — it's their quota, their limits, and
+ * no third party in the path. The holder gateway is the fallback perk, and when
+ * neither exists the honest answer is "no discovery", not a broken client.
+ */
+export function resolveBitquery(cfg: {
+  bitqueryApiKey?: string;
+  merrymenToken?: string;
+  gatewayUrl?: string;
+}): BitqueryCreds | null {
+  if (cfg.bitqueryApiKey) return { apiKey: cfg.bitqueryApiKey };
+  if (cfg.merrymenToken) {
+    return {
+      apiKey: cfg.merrymenToken,
+      endpoint: cfg.gatewayUrl || MERRYMEN_GATEWAY_BITQUERY,
+      viaGateway: true,
+    };
+  }
+  return null;
 }
 
 export interface BitqueryResult<T> {
@@ -53,6 +95,7 @@ export interface BitqueryResult<T> {
  */
 export async function bitqueryQuery<T = unknown>(
   creds: BitqueryCreds,
+  /** Raw GraphQL for a direct key; the NAME of a catalogue query via the gateway. */
   query: string,
   variables: Record<string, unknown> = {},
   opts: { timeoutMs?: number } = {},
@@ -76,7 +119,15 @@ export async function bitqueryQuery<T = unknown>(
     });
     if (!res.ok) {
       // Deliberately not echoing the body — an auth error can quote the request.
-      return { ok: false, error: `bitquery HTTP ${res.status}${res.status === 401 || res.status === 403 ? " — check the API key in /settings" : ""}` };
+      const hint =
+        res.status === 401 || res.status === 403
+          ? creds.viaGateway
+            ? " — your Merry Circle token expired or your wallet no longer qualifies; re-claim it"
+            : " — check the API key in /settings"
+          : res.status === 429 && creds.viaGateway
+            ? " — the shared holder quota is per-wallet; add your own Bitquery key in /settings to lift it"
+            : "";
+      return { ok: false, error: `bitquery HTTP ${res.status}${hint}` };
     }
     const json = (await res.json()) as { data?: T; errors?: { message?: string }[] };
     if (json.errors?.length) {
@@ -99,7 +150,9 @@ export async function bitqueryQuery<T = unknown>(
  * rather than from a discovery feed that is quietly always empty.
  */
 export async function bitqueryPing(creds: BitqueryCreds): Promise<BitqueryResult<{ blockHeight: number }>> {
-  const q = `{
+  const q = creds.viaGateway
+    ? "ping"
+    : `{
     EVM(network: ${BITQUERY_NETWORK}) {
       Blocks(limit: {count: 1}, orderBy: {descending: Block_Number}) {
         Block { Number }
@@ -148,6 +201,15 @@ export async function recentPools(
 ): Promise<BitqueryResult<NewPair[]>> {
   const limit = Math.min(opts.limit ?? 25, 100);
   const sinceMinutes = opts.sinceMinutes ?? 60;
+  if (creds.viaGateway) {
+    // The gateway owns the GraphQL and clamps these itself; we send intent only.
+    const g = await bitqueryQuery<{ EVM?: { Events?: unknown[] } }>(creds, "recentPools", {
+      sinceMinutes,
+      limit,
+    });
+    if (!g.ok) return { ok: false, error: g.error };
+    return { ok: true, data: (g.data?.EVM?.Events ?? []).map(parsePoolEvent).filter((p): p is NewPair => p !== null) };
+  }
   const q = `query ($since: DateTime, $limit: Int) {
     EVM(network: ${BITQUERY_NETWORK}) {
       Events(
