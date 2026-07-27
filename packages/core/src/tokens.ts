@@ -29,7 +29,48 @@ export interface StockToken {
   address: `0x${string}`;
   /** Chainlink AggregatorV3 feed (USD). null = no feed published yet. */
   chainlinkFeed: `0x${string}` | null;
-  kind: "stock" | "etf";
+  /**
+   * "stock"/"etf" are issuer-backed Stock Tokens with Chainlink feeds and
+   * ERC-8056 multipliers. "memecoin" is any other ERC-20 on the chain: no feed,
+   * no multiplier, priced from a DEX pool and only when the pool is deep enough
+   * to be worth trusting (see worker/src/venues/pool-price.ts).
+   */
+  kind: "stock" | "etf" | "memecoin";
+  /** ERC-20 decimals. Stock tokens and WETH are 18; a memecoin can be anything,
+   * and the asset model needs the real figure to value it at all. */
+  decimals?: number;
+  /**
+   * How this token reaches USD. Live pool data for Robinhood Chain (2026-07)
+   * shows ~75% of pools quote against WETH rather than USDG, so most memecoins
+   * price via TOKEN/WETH × WETH/USDG. Stock tokens have direct USDG pairs.
+   * Undefined means "try direct, then WETH" — the routing default.
+   */
+  quote?: "usdg" | "weth";
+}
+
+/**
+ * User-added tokens live in settings, not here — this file is the curated,
+ * issuer-backed registry and stays that way. A memecoin the owner adds is
+ * their choice and their risk, so it is stored with their config and must pass
+ * the same liquidity/divergence guards as anything else before it is valued.
+ */
+export interface CustomToken {
+  symbol: string;
+  address: `0x${string}`;
+  decimals: number;
+}
+
+/** Reject anything that isn't a plausible ERC-20 entry before it can reach a
+ * policy allowlist or a price lookup. Shape only — depth is checked on-chain. */
+export function isValidCustomToken(t: unknown): t is CustomToken {
+  if (!t || typeof t !== "object") return false;
+  const c = t as Partial<CustomToken>;
+  if (typeof c.symbol !== "string" || !/^[A-Za-z0-9._-]{1,16}$/.test(c.symbol)) return false;
+  if (typeof c.address !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(c.address)) return false;
+  if (typeof c.decimals !== "number" || !Number.isInteger(c.decimals) || c.decimals < 0 || c.decimals > 36) {
+    return false;
+  }
+  return true;
 }
 
 /** Shared upgrade beacon behind every Stock Token BeaconProxy. */

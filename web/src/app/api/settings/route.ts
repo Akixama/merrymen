@@ -17,6 +17,7 @@ import {
   SECRET_SETTING_KEYS,
   SETTINGS_DEFAULTS,
   STOCK_TOKENS,
+  isValidCustomToken,
   type LlmProviderInfo,
   type MerrymenSettings,
 } from "@merrymen/core";
@@ -148,6 +149,10 @@ const NUM_FIELDS: Record<string, [number, number]> = {
   telegramDigestHour: [0, 23],
   telegramNotifyEveryMin: [0, 1440],
   telegramAgentMaxSteps: [1, 60],
+  // Manipulation guards for DEX-priced tokens. The floor may be lowered to 0,
+  // but that is the owner explicitly accepting a price anyone can push.
+  minPoolLiquidityUsdg: [0, 100_000_000],
+  maxPriceDivergenceBps: [10, 10_000],
 };
 const BOOL_FIELDS = [
   "paperTradingEnabled",
@@ -221,6 +226,40 @@ export async function PUT(req: Request) {
       const n = typeof v === "number" ? v : Number(v);
       if (Number.isFinite(n) && n >= min && n <= max) setOrClear(k, n as never);
       else errors.push(`${key}: must be a number between ${min} and ${max}`);
+    }
+  }
+
+  // ── owner-added tokens (memecoins) ──────────────────────────────────────
+  // Validated on the way in AND again in the worker's resolver — this endpoint
+  // is the only thing between a webpage and the agent's token set, and an
+  // address here eventually reaches a policy allowlist. Malformed entries are
+  // REJECTED with an error rather than silently dropped, so a typo'd address is
+  // visible instead of quietly ignored.
+  if ("customTokens" in body) {
+    const v = body.customTokens;
+    if (v === "" || v === null || v === undefined) {
+      setOrClear("customTokens", undefined);
+    } else if (!Array.isArray(v)) {
+      errors.push("customTokens: must be a list");
+    } else if (v.length > 50) {
+      errors.push("customTokens: at most 50 tokens (each costs an on-chain read every tick)");
+    } else {
+      const clean: { symbol: string; address: string; decimals: number }[] = [];
+      const seen = new Set<string>();
+      for (const [i, raw] of v.entries()) {
+        if (!isValidCustomToken(raw)) {
+          errors.push(`customTokens[${i}]: needs a symbol, a 0x address and decimals`);
+          continue;
+        }
+        const key = raw.address.toLowerCase();
+        if (seen.has(key)) {
+          errors.push(`customTokens[${i}]: duplicate address ${raw.address}`);
+          continue;
+        }
+        seen.add(key);
+        clean.push({ symbol: raw.symbol, address: raw.address, decimals: raw.decimals });
+      }
+      if (!errors.length) setOrClear("customTokens", clean);
     }
   }
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  combineLegs,
   divergenceBps,
   meanTick,
   poolPriceUsable,
@@ -88,6 +89,28 @@ describe("divergenceBps", () => {
 
   it("is zero when there's no TWAP to compare against", () => {
     assert.equal(divergenceBps(usd(100), 0n), 0);
+  });
+});
+
+/**
+ * Most of this chain's memecoins quote against WETH, not USDG (checked live:
+ * ~75% of pools), so a memecoin price is nearly always TOKEN/WETH × WETH/USDG.
+ */
+describe("combineLegs — routing a price through WETH", () => {
+  it("multiplies the two legs and keeps 8dp", () => {
+    // 0.0004 WETH per token × $2500 per WETH = $1.00
+    assert.equal(combineLegs(usd(0.0004), usd(2500)), usd(1));
+  });
+
+  it("survives a sub-cent memecoin without collapsing to zero", () => {
+    // 0.0000002 WETH × $2500 = $0.0005
+    const p = combineLegs(usd(0.0000002), usd(2500));
+    assert.ok(Math.abs(Number(p) / 1e8 - 0.0005) < 1e-6, `got ${Number(p) / 1e8}`);
+  });
+
+  it("returns 0 when either leg is missing — never a half-priced guess", () => {
+    assert.equal(combineLegs(0n, usd(2500)), 0n);
+    assert.equal(combineLegs(usd(0.0004), 0n), 0n);
   });
 });
 

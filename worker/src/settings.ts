@@ -10,6 +10,8 @@ import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import {
   SETTINGS_DEFAULTS,
   STOCK_TOKENS,
+  isValidCustomToken,
+  type CustomToken,
   type MerrymenSettings,
 } from "../../packages/core/src/index";
 import { ensureHome, homePaths } from "./home";
@@ -42,6 +44,12 @@ export interface ResolvedConfig {
   perfFeeBps: number;
   tickSeconds: number;
   basketSymbols: string[];
+  /** Owner-added ERC-20s (memecoins). Shape-checked; still gated by the grant. */
+  customTokens: CustomToken[];
+  /** USD depth below which a token is refused a price (manipulation guard). */
+  minPoolLiquidityUsdg: number;
+  /** Spot-vs-TWAP band, bps, above which a price is refused. */
+  maxPriceDivergenceBps: number;
   buyPerTickUsdg: number;
   idleFloorUsdg: number;
   gapEnterBudgetUsdg: number;
@@ -163,6 +171,21 @@ export function mergeSettings(
     : [];
   const basketSymbols = fileSymbols.length > 0 ? fileSymbols : d.basketSymbols;
 
+  // Owner-added tokens. Shape-validated here (address/symbol/decimals) — depth
+  // and manipulation checks happen on-chain at price time, and the grant still
+  // has to be re-signed before any of these can actually be traded. Duplicates
+  // and anything malformed are dropped silently rather than poisoning the set.
+  const seenTokens = new Set<string>();
+  const customTokens = (Array.isArray(file.customTokens) ? file.customTokens : [])
+    .filter(isValidCustomToken)
+    .filter((t) => {
+      const key = t.address.toLowerCase();
+      if (seenTokens.has(key)) return false;
+      seenTokens.add(key);
+      return true;
+    })
+    .slice(0, 50); // a sane ceiling; every entry costs RPC reads per tick
+
   return {
     bundlerApiKey: str(file.bundlerApiKey, env.MERRYMEN_BUNDLER_API_KEY),
     bundlerUrl: str(file.bundlerUrl, env.MERRYMEN_BUNDLER_URL),
@@ -192,6 +215,9 @@ export function mergeSettings(
     perfFeeBps: num(file.perfFeeBps, env.MERRYMEN_PERF_FEE_BPS, d.perfFeeBps, 0, 5_000),
     tickSeconds: num(file.tickSeconds, env.MERRYMEN_TICK_SECONDS, d.tickSeconds, 15, 3_600),
     basketSymbols,
+    customTokens,
+    minPoolLiquidityUsdg: num(file.minPoolLiquidityUsdg, env.MERRYMEN_MIN_POOL_LIQUIDITY_USDG, d.minPoolLiquidityUsdg, 0, 100_000_000),
+    maxPriceDivergenceBps: num(file.maxPriceDivergenceBps, env.MERRYMEN_MAX_PRICE_DIVERGENCE_BPS, d.maxPriceDivergenceBps, 10, 10_000),
     buyPerTickUsdg: num(file.buyPerTickUsdg, env.MERRYMEN_BUY_PER_TICK_USDG, d.buyPerTickUsdg, 1, 100_000),
     idleFloorUsdg: num(file.idleFloorUsdg, env.MERRYMEN_IDLE_FLOOR_USDG, d.idleFloorUsdg, 0, 1_000_000),
     gapEnterBudgetUsdg: num(file.gapEnterBudgetUsdg, env.MERRYMEN_GAP_BUDGET_USDG, d.gapEnterBudgetUsdg, 1, 1_000_000),

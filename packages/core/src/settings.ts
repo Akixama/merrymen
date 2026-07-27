@@ -79,6 +79,23 @@ export interface MerrymenSettings {
   tickSeconds?: number;
   /** Basket universe — symbols from the official token registry, equal-weighted. */
   basketSymbols?: string[];
+  /**
+   * Tokens the owner added themselves — memecoins and anything else outside the
+   * curated stock registry. Kept in the owner's config rather than the shipped
+   * registry because it is their choice and their risk.
+   *
+   * Adding one does NOT by itself let the agent trade it: the tradable set is
+   * baked into the signed session key, so a new token needs the grant re-signed.
+   * That is the wall working as designed — it cannot widen without a signature.
+   */
+  customTokens?: { symbol: string; address: string; decimals: number }[];
+  /** Refuse to value a token whose deepest route is shallower than this (USD).
+   * A thin pool can be pushed for pocket change, and that price would feed
+   * equity, P&L and the drawdown breaker. */
+  minPoolLiquidityUsdg?: number;
+  /** Refuse when spot has run this far from the TWAP (bps) — the signature of a
+   * pool being manipulated right now. */
+  maxPriceDivergenceBps?: number;
   /** Steady-basket: USDG bought per tick across the basket. */
   buyPerTickUsdg?: number;
   /** Steady-basket: cash floor kept liquid; the excess sweeps to the vault. */
@@ -200,6 +217,12 @@ export const SETTINGS_DEFAULTS = {
   // Only tokens with a live Uniswap v3 pool — otherwise a fresh agent's buys
   // all no-route. See TRADEABLE_SYMBOLS in tokens.ts.
   basketSymbols: [...TRADEABLE_SYMBOLS] as string[],
+  customTokens: [] as { symbol: string; address: string; decimals: number }[],
+  // $25k of depth and a 5% spot/TWAP band. Deliberately strict: live pools on
+  // this chain run from ~$3k (trivially pushed) to ~$1.2M, so this admits the
+  // deep end and refuses the rest until the owner explicitly loosens it.
+  minPoolLiquidityUsdg: 25_000,
+  maxPriceDivergenceBps: 500,
   buyPerTickUsdg: 25,
   idleFloorUsdg: 50,
   gapEnterBudgetUsdg: 75,

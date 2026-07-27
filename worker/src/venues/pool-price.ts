@@ -150,6 +150,24 @@ export function poolPriceUsable(p: PoolPrice, guard: PriceGuard): { ok: true } |
   return { ok: true };
 }
 
+/**
+ * Combine two TWAP legs into one price: TOKEN→WETH→USDG.
+ *
+ * ON-CHAIN REALITY (checked against live Robinhood Chain pools, 2026-07):
+ * roughly three quarters of pools quote against WETH, not USDG — CATE, VIRTUAL,
+ * KITTY, GRAILS, POTUS, HOODER and friends all pair with WETH. Only the stock
+ * tokens (nvda, gme) and a couple of others have direct USDG pairs. So a
+ * memecoin price is nearly always two hops, and pricing that assumed a direct
+ * cash pair would simply find nothing for most of the chain.
+ *
+ * The depth of a two-hop route is the SHALLOWER leg — a deep WETH/USDG pool
+ * does not make a $3k memecoin pool safe to value.
+ */
+export function combineLegs(tokenPerWeth8: bigint, wethPerCash8: bigint): bigint {
+  if (tokenPerWeth8 <= 0n || wethPerCash8 <= 0n) return 0n;
+  return (tokenPerWeth8 * wethPerCash8) / 100_000_000n; // both 8dp → keep 8dp
+}
+
 // ── on-chain read ───────────────────────────────────────────────────────────
 
 /**
@@ -242,4 +260,100 @@ export async function readPoolPrice(
   } catch {
     return null;
   }
+}
+
+export interface RoutedPrice {
+  /** TWAP, USD per whole token, 8dp — valuation and safety. */
+  price8: bigint;
+  /** Spot, same units — execution sizing only. */
+  spot8: bigint;
+  /** "direct" (TOKEN/USDG) or "weth" (TOKEN/WETH × WETH/USDG). */
+  route: "direct" | "weth";
+  /** USD depth of the SHALLOWEST leg — what actually bounds manipulation cost. */
+  liquidityUsdg: bigint;
+  /** Worst divergence across the legs. */
+  divergenceBps: number;
+  twapWindowSec: number;
+}
+
+/**
+ * Price one token in USD, routing through WETH when there's no direct cash pair.
+ *
+ * Tries the direct TOKEN/USDG pool first (stock tokens, PONS), then falls back
+ * to TOKEN/WETH priced through WETH/USDG — which is how most of this chain's
+ * memecoins actually trade. Returns null when neither route exists.
+ *
+ * The caller still runs poolPriceUsable() on the result: routing finds a price,
+ * it does not vouch for one.
+ */
+export async function readRoutedPrice(
+  client: PublicClient,
+  args: {
+    token: `0x${string}`;
+    tokenDecimals: number;
+    cash: `0x${string}`;
+    cashDecimals: number;
+    weth: `0x${string}`;
+    wethDecimals?: number;
+    windowSec?: number;
+  },
+): Promise<RoutedPrice | null> {
+  const windowSec = args.windowSec ?? DEFAULT_TWAP_WINDOW_SEC;
+  const wethDecimals = args.wethDecimals ?? 18;
+
+  // Same token on both sides would "price" WETH against itself.
+  const isWeth = args.token.toLowerCase() === args.weth.toLowerCase();
+
+  const direct = await readPoolPrice(client, {
+    token: args.token,
+    tokenDecimals: args.tokenDecimals,
+    cash: args.cash,
+    cashDecimals: args.cashDecimals,
+    windowSec,
+  });
+  if (direct && direct.price8 > 0n) {
+    return {
+      price8: direct.price8,
+      spot8: direct.spot8,
+      route: "direct",
+      liquidityUsdg: direct.liquidityUsdg,
+      divergenceBps: direct.divergenceBps,
+      twapWindowSec: windowSec,
+    };
+  }
+  if (isWeth) return null; // no direct WETH/USDG pool and nothing to hop through
+
+  // Two hops. Both legs are read in parallel — they're independent pools.
+  const [leg, wethLeg] = await Promise.all([
+    readPoolPrice(client, {
+      token: args.token,
+      tokenDecimals: args.tokenDecimals,
+      cash: args.weth,
+      cashDecimals: wethDecimals,
+      windowSec,
+    }),
+    readPoolPrice(client, {
+      token: args.weth,
+      tokenDecimals: wethDecimals,
+      cash: args.cash,
+      cashDecimals: args.cashDecimals,
+      windowSec,
+    }),
+  ]);
+  if (!leg || !wethLeg || leg.price8 <= 0n || wethLeg.price8 <= 0n) return null;
+
+  // The TOKEN/WETH pool's depth is denominated in WETH, so convert it to USD
+  // before comparing against a USD floor.
+  const legDepthUsdg = (leg.liquidityUsdg * wethLeg.price8) / 100_000_000n;
+
+  return {
+    price8: combineLegs(leg.price8, wethLeg.price8),
+    spot8: combineLegs(leg.spot8, wethLeg.spot8),
+    route: "weth",
+    // A deep WETH/USDG pool does NOT make a shallow memecoin pool safe: the
+    // route is only as manipulable as its thinnest leg.
+    liquidityUsdg: legDepthUsdg < wethLeg.liquidityUsdg ? legDepthUsdg : wethLeg.liquidityUsdg,
+    divergenceBps: Math.max(leg.divergenceBps, wethLeg.divergenceBps),
+    twapWindowSec: windowSec,
+  };
 }

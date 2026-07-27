@@ -21,7 +21,7 @@ import {
 export interface MarketToken {
   symbol: string;
   name: string;
-  kind: "stock" | "etf";
+  kind: "stock" | "etf" | "memecoin";
   address: string;
   logo: string;
   priceUsd: number | null;
