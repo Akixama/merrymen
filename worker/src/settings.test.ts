@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { connectionKey, mergeSettings, strategyKey, telegramKey } from "./settings";
+import { SETTINGS_DEFAULTS } from "../../packages/core/src/index";
 
 describe("mergeSettings — file > env > default", () => {
   it("defaults hold with nothing set", () => {
@@ -171,5 +172,42 @@ describe("change fingerprints", () => {
     assert.notEqual(telegramKey(a), telegramKey(allowChanged));
     assert.notEqual(telegramKey(a), telegramKey(disabled));
     assert.equal(telegramKey(a), telegramKey(unrelated));
+  });
+});
+
+/**
+ * The basket may name an owner-added token. Filtering selections against the
+ * shipped registry alone silently dropped every memecoin here — so a strategy
+ * never received it as a leg no matter what the owner selected, and nothing
+ * anywhere said why. Resolution order matters: customTokens must be parsed
+ * before the basket that is allowed to reference them.
+ */
+describe("mergeSettings — the basket can name an owner-added token", () => {
+  const CATE = { symbol: "CATE", address: "0x00000000000000000000000000000000000000c1", decimals: 18 };
+
+  it("keeps a selected custom symbol instead of dropping it", () => {
+    const c = mergeSettings({ basketSymbols: ["NVDA", "CATE"], customTokens: [CATE] }, {});
+    assert.deepEqual(c.basketSymbols, ["NVDA", "CATE"]);
+  });
+
+  it("still drops a symbol that resolves to nothing at all", () => {
+    const c = mergeSettings({ basketSymbols: ["NVDA", "NOPE"], customTokens: [CATE] }, {});
+    assert.deepEqual(c.basketSymbols, ["NVDA"]);
+  });
+
+  it("drops a custom symbol once its token is removed from settings", () => {
+    const c = mergeSettings({ basketSymbols: ["NVDA", "CATE"], customTokens: [] }, {});
+    assert.deepEqual(c.basketSymbols, ["NVDA"]);
+  });
+
+  it("a malformed custom token doesn't make its symbol selectable", () => {
+    const bad = { symbol: "CATE", address: "0x123", decimals: 18 };
+    const c = mergeSettings({ basketSymbols: ["NVDA", "CATE"], customTokens: [bad] }, {});
+    assert.deepEqual(c.basketSymbols, ["NVDA"]);
+  });
+
+  it("falls back to the default basket when nothing selected survives", () => {
+    const c = mergeSettings({ basketSymbols: ["NOPE"] }, {});
+    assert.deepEqual(c.basketSymbols, [...SETTINGS_DEFAULTS.basketSymbols]);
   });
 });

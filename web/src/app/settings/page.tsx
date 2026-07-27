@@ -919,6 +919,23 @@ export default function SettingsPage() {
                 </button>
               )}
             </Field>
+            <Field
+              label="bitquery api key"
+              action={{ href: "https://account.bitquery.io/", label: "get a key" }}
+              hint="Lets your merryman SEE what it otherwise can't: Bitquery indexes Robinhood Chain from genesis, including Uniswap v4 — where new pairs and graduating tokens actually launch. Discovery only: it can tell your agent a pair exists, never authorise a trade in one. Everything it finds still has to clear the same depth and price guards."
+            >
+              <input
+                type="password"
+                placeholder={secretPlaceholder(view.bitqueryApiKey)}
+                value={draft.bitqueryApiKey ?? ""}
+                onChange={set("bitqueryApiKey")}
+              />
+              {view.bitqueryApiKey.set && (
+                <button type="button" className="btn-kill settings-clear" onClick={() => setDraft((x) => ({ ...x, bitqueryApiKey: "" }))}>
+                  clear
+                </button>
+              )}
+            </Field>
           </div>
 
           <div className="settings-section mono">trading knobs</div>

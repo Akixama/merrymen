@@ -42,8 +42,9 @@ export interface SettingsView {
   telegramBotToken: SecretView;
   telegramTranscribeKey: SecretView;
   virtualsApiKey: SecretView;
+  bitqueryApiKey: SecretView;
   // everything else, verbatim (undefined = using env/default)
-  values: Omit<MerrymenSettings, "bundlerApiKey" | "groqApiKey" | "anthropicApiKey" | "llmApiKey" | "rialtoApiKey" | "telegramBotToken" | "telegramTranscribeKey" | "virtualsApiKey">;
+  values: Omit<MerrymenSettings, "bundlerApiKey" | "groqApiKey" | "anthropicApiKey" | "llmApiKey" | "rialtoApiKey" | "telegramBotToken" | "telegramTranscribeKey" | "virtualsApiKey" | "bitqueryApiKey">;
   defaults: typeof SETTINGS_DEFAULTS;
   knownSymbols: string[];
   strategies: { builtin: string[]; custom: string[] };
@@ -105,7 +106,7 @@ function redactUrl(u: unknown): string | undefined {
 
 export async function GET() {
   const stored = await readStored();
-  const { bundlerApiKey, groqApiKey, anthropicApiKey, llmApiKey, rialtoApiKey, telegramBotToken, telegramTranscribeKey, virtualsApiKey, ...values } = stored;
+  const { bundlerApiKey, groqApiKey, anthropicApiKey, llmApiKey, rialtoApiKey, telegramBotToken, telegramTranscribeKey, virtualsApiKey, bitqueryApiKey, ...values } = stored;
   // These URL fields can embed API keys — redact before they leave the server.
   const safeValues = {
     ...values,
@@ -123,6 +124,7 @@ export async function GET() {
     telegramBotToken: mask(telegramBotToken),
     telegramTranscribeKey: mask(telegramTranscribeKey),
     virtualsApiKey: mask(virtualsApiKey),
+    bitqueryApiKey: mask(bitqueryApiKey),
     values: safeValues,
     defaults: SETTINGS_DEFAULTS,
     knownSymbols: STOCK_TOKENS.map((t) => t.symbol),

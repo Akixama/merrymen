@@ -60,6 +60,7 @@ export interface ResolvedConfig {
   holderAddress: `0x${string}` | undefined;
   /** Virtuals API key (secret) — streams agent activity to its Virtuals page. */
   virtualsApiKey: string | undefined;
+  bitqueryApiKey: string | undefined;
   /** Master switch for Virtuals Terminal streaming (off by default). */
   virtualsEnabled: boolean;
   telegramBotToken: string | undefined;
@@ -166,15 +167,12 @@ export function mergeSettings(
   const holderAddress =
     rawHolder && /^0x[0-9a-fA-F]{40}$/.test(rawHolder) ? (rawHolder as `0x${string}`) : undefined;
 
-  const fileSymbols = Array.isArray(file.basketSymbols)
-    ? file.basketSymbols.filter((s): s is string => typeof s === "string" && KNOWN_SYMBOLS.has(s))
-    : [];
-  const basketSymbols = fileSymbols.length > 0 ? fileSymbols : d.basketSymbols;
-
   // Owner-added tokens. Shape-validated here (address/symbol/decimals) — depth
   // and manipulation checks happen on-chain at price time, and the grant still
   // has to be re-signed before any of these can actually be traded. Duplicates
   // and anything malformed are dropped silently rather than poisoning the set.
+  //
+  // Resolved BEFORE the basket, because the basket is allowed to name them.
   const seenTokens = new Set<string>();
   const customTokens = (Array.isArray(file.customTokens) ? file.customTokens : [])
     .filter(isValidCustomToken)
@@ -185,6 +183,17 @@ export function mergeSettings(
       return true;
     })
     .slice(0, 50); // a sane ceiling; every entry costs RPC reads per tick
+
+  // A selected symbol may be a registry stock OR one of the owner's own tokens.
+  // Filtering against the registry alone silently dropped every memecoin from
+  // the basket here — so the strategy never got it as a leg no matter what the
+  // owner selected, and nothing said why. The drop is still right for a symbol
+  // that resolves to nothing at all; it is wrong for one the owner defined.
+  const selectable = new Set([...KNOWN_SYMBOLS, ...customTokens.map((t) => t.symbol)]);
+  const fileSymbols = Array.isArray(file.basketSymbols)
+    ? file.basketSymbols.filter((s): s is string => typeof s === "string" && selectable.has(s))
+    : [];
+  const basketSymbols = fileSymbols.length > 0 ? fileSymbols : d.basketSymbols;
 
   return {
     bundlerApiKey: str(file.bundlerApiKey, env.MERRYMEN_BUNDLER_API_KEY),
@@ -226,6 +235,7 @@ export function mergeSettings(
     llmMaxActionUsdg: num(file.llmMaxActionUsdg, env.MERRYMEN_LLM_MAX_ACTION_USDG, d.llmMaxActionUsdg, 1, 100_000),
     holderAddress,
     virtualsApiKey: str(file.virtualsApiKey, env.MERRYMEN_VIRTUALS_API_KEY),
+    bitqueryApiKey: str(file.bitqueryApiKey, env.BITQUERY_API_KEY),
     virtualsEnabled: bool(file.virtualsEnabled, env.MERRYMEN_VIRTUALS_ENABLED, d.virtualsEnabled),
     telegramBotToken: str(file.telegramBotToken, env.MERRYMEN_TELEGRAM_BOT_TOKEN),
     telegramEnabled: bool(file.telegramEnabled, env.MERRYMEN_TELEGRAM_ENABLED, d.telegramEnabled),

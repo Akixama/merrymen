@@ -117,6 +117,17 @@ export interface MerrymenSettings {
   /** Virtuals API key (secret). Get it from your agent's page on app.virtuals.io.
    * Enables streaming the merryman's live activity to its Virtuals Terminal. */
   virtualsApiKey?: string;
+  /**
+   * Bitquery API key (secret). Bitquery indexes Robinhood Chain from genesis —
+   * decoded events, DEX trades and, crucially, Uniswap **v4** pool activity that
+   * merrymen's own v3 reads cannot see. It is a DISCOVERY source: it can tell
+   * the agent a pair exists, never authorise a trade in it.
+   *
+   * Read-only and off the hot path by construction. Nothing Bitquery returns
+   * may widen a cap, and a token it surfaces still has to clear the same depth,
+   * TWAP and divergence guards as anything else before it can be valued.
+   */
+  bitqueryApiKey?: string;
   /** Master switch — OFF by default. When on (and a key is set), landed/rejected
    * trades and the daily report are PUBLISHED to your agent's Virtuals page.
    * Outbound + public: nothing streams until you turn this on. */
@@ -187,6 +198,7 @@ export const SECRET_SETTING_KEYS = [
   "telegramBotToken",
   "telegramTranscribeKey",
   "virtualsApiKey",
+  "bitqueryApiKey",
 ] as const;
 export type SecretSettingKey = (typeof SECRET_SETTING_KEYS)[number];
 
