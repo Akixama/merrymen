@@ -4,7 +4,14 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { Info } from "@/components/Info";
 import { LogoMark } from "@/components/Logo";
-import { explorerFor, robinhoodChain, robinhoodTestnet } from "@merrymen/core";
+import {
+  explorerFor,
+  isValidCustomToken,
+  robinhoodChain,
+  robinhoodTestnet,
+  tokenCoverage,
+  type CustomToken,
+} from "@merrymen/core";
 import {
   clearGrant,
   createAgentWallet,
@@ -111,6 +118,10 @@ export default function GrantPage() {
   // to "discard" a funded wallet just to reach the restore tab — the exact scary
   // click that strands people. Switching archives the outgoing wallet instead.
   const [switching, setSwitching] = useState(false);
+  // Owner-added tokens from settings. These are NOT tradable by virtue of being
+  // listed — the tradable set lives inside the signed session key, so listing a
+  // token only takes effect when a grant covering it is signed here.
+  const [customTokens, setCustomTokens] = useState<CustomToken[]>([]);
 
   useEffect(() => {
     setGrant(loadGrant());
@@ -119,6 +130,13 @@ export default function GrantPage() {
       .then((r) => (r.ok ? r.json() : { exists: false }))
       .then((s: { exists?: boolean }) => setServerArmed(!!s.exists))
       .catch(() => setServerArmed(null));
+    fetch("/api/settings")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((v: { values?: { customTokens?: unknown[] } } | null) => {
+        const list = (v?.values?.customTokens ?? []).filter(isValidCustomToken);
+        setCustomTokens(list as CustomToken[]);
+      })
+      .catch(() => setCustomTokens([]));
   }, []);
 
   /** Re-push the stored grant so the worker obeys it again (undo a desync). */
@@ -158,6 +176,12 @@ export default function GrantPage() {
   const set = (k: keyof GrantCaps) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setCaps((c) => ({ ...c, [k]: Number(e.target.value) }));
 
+  // Tokens listed in settings that THIS signature doesn't actually cover.
+  // Settings can't reach into an already-signed key, so the gap is real: without
+  // a re-sign the agent would watch the token and then revert at the wall when
+  // it tried to sell. Better to say so here than to discover it as a failed op.
+  const uncoveredTokens = grant ? tokenCoverage(customTokens, grant).uncovered : [];
+
   const isMainnet = chainId === MAINNET;
   // Mainnet is real money — the create button stays locked until the user
   // explicitly owns that (keys are plaintext-local; caps are the seatbelt).
@@ -167,7 +191,7 @@ export default function GrantPage() {
     setError(null);
     setStatus("starting…");
     try {
-      const g = await createAgentWallet(caps, setStatus, chainId);
+      const g = await createAgentWallet(caps, setStatus, chainId, customTokens);
       setGrant(g);
       setStatus(null);
     } catch (e) {
@@ -202,7 +226,13 @@ export default function GrantPage() {
     setError(null);
     setStatus("starting…");
     try {
-      const g = await restoreAgentWallet(restoreKey.trim() as `0x${string}`, caps, setStatus, chainId);
+      const g = await restoreAgentWallet(
+        restoreKey.trim() as `0x${string}`,
+        caps,
+        setStatus,
+        chainId,
+        customTokens,
+      );
       // They just pasted the owner key, so it's demonstrably backed up — skip the
       // backup gate and drop them straight into the funded/manage view.
       localStorage.setItem(BACKUP_KEY, "1");
@@ -225,6 +255,9 @@ export default function GrantPage() {
    * A grant is a local signature — nothing goes on-chain, no gas is spent, and
    * it works in paper and live mode alike. This exists so expiry never forces
    * anyone through discard/restore.
+   *
+   * It is ALSO how a newly-added token becomes tradable: the tradable set is
+   * sealed into the signed key, so the current `customTokens` are baked in here.
    */
   const [renewing, setRenewing] = useState(false);
   async function renewKey() {
@@ -232,7 +265,13 @@ export default function GrantPage() {
     setError(null);
     setRenewing(true);
     try {
-      const g = await restoreAgentWallet(grant.demoOwnerPrivateKey, grant.caps, () => {}, grant.chainId);
+      const g = await restoreAgentWallet(
+        grant.demoOwnerPrivateKey,
+        grant.caps,
+        () => {},
+        grant.chainId,
+        customTokens,
+      );
       setGrant(g);
       setServerArmed(true);
     } catch (e) {
@@ -628,6 +667,32 @@ export default function GrantPage() {
         {/* ─── phase 3: fund the account ───────────────────────────────── */}
         {grant && backedUp && !desynced && !switching && (
           <div className="grant-panel">
+            {/* Tokens added in settings after this key was signed. The wall can't
+                widen without a signature — that's the point — so say it plainly
+                and put the fix one click away. */}
+            {uncoveredTokens.length > 0 && grant.demoOwnerPrivateKey && (
+              <div className="renew-note">
+                🔒 <b>
+                  {uncoveredTokens.length === 1 ? "One token you added isn't" : `${uncoveredTokens.length} tokens you added aren't`}
+                </b>{" "}
+                covered by your agent&apos;s current key:{" "}
+                <span className="mono">{uncoveredTokens.map((t) => t.symbol).join(", ")}</span>. The
+                tradable list is sealed into the signature, so adding a token in settings can&apos;t
+                widen it — your merryman can watch{" "}
+                {uncoveredTokens.length === 1 ? "it" : "them"} but couldn&apos;t sell{" "}
+                {uncoveredTokens.length === 1 ? "it" : "them"} back out.
+                <br />
+                Re-signing fixes it: same wallet, same funds, same caps, free and instant.
+                <button
+                  className="grant-btn"
+                  style={{ marginTop: 10, width: "100%" }}
+                  onClick={() => void renewKey()}
+                  disabled={renewing}
+                >
+                  {renewing ? "re-signing…" : `re-sign to cover ${uncoveredTokens.map((t) => t.symbol).join(", ")}`}
+                </button>
+              </div>
+            )}
             {/* Key expiry — renewal is one click, free (a local signature; no
                 gas, nothing moves, same wallet). Applies in paper AND live mode. */}
             {(() => {

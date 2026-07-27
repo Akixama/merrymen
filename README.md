@@ -329,6 +329,21 @@ the verified registry (`ctx.tokenBySymbol.QQQ`, `ctx.CASH.USDG`,
 [strategies/README.md](./strategies/README.md) and
 [strategies/example-dip-buyer.mjs](./strategies/example-dip-buyer.mjs).
 
+### Adding your own tokens (memecoins)
+
+The built-in registry is the issuer-backed stock tokens — curated, Chainlink-priced.
+Anything else on Robinhood Chain you add yourself in `/settings`: paste the symbol,
+the contract address, and its decimals. These are priced from the Uniswap pool
+(time-averaged, with a depth floor and a divergence band against spot), never from
+a feed — and a pool too thin to trust is refused rather than guessed at.
+
+**Adding a token doesn't make it tradable.** The list of tokens your agent may
+approve is baked into the session key you signed, so widening it takes a
+signature — that's the wall doing its job, not a bug. Save the token, then hit
+**re-sign** on `/grant`: same wallet, same address, same funds, same caps, free and
+instant. Until you do, `/settings` and the event feed both say plainly which
+tokens your key can't sell, rather than letting you find out when a sell reverts.
+
 ---
 
 ## $MERRYMEN — the Merry Circle

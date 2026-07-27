@@ -43,6 +43,7 @@ import {
   effectivePerfFeeBps,
   pimlicoBundlerUrl,
   robinhoodTestnet,
+  tokenCoverage,
   type CircleTier,
   type StockToken,
   type StoredGrant,
@@ -239,6 +240,9 @@ async function main() {
       stratKey = nextStrat;
     }
     cfg = next;
+    // Adding a token in /settings is the common way this drifts — say so on the
+    // next tick rather than at the next re-arm, which might never come.
+    if (active) await noteTokenCoverage(active.agentId);
   }
 
   let spentTodayUsdg = 0n;
@@ -256,6 +260,37 @@ async function main() {
   let lastEquityUsdg = 0n; // updated each tick; used by chat-triggered trades
   let lastGasWei = 0n; // updated each tick; feeds the low-gas Telegram alert
   let notifierHandle: ReturnType<typeof startNotifier> | null = null;
+
+  /**
+   * Tokens the owner listed in settings that the CURRENT signature can't
+   * approve. Adding a token to settings can't widen an already-signed session
+   * key — that's the whole point of the wall — so the two lists can legitimately
+   * disagree, and the owner has to be told which side is short. Otherwise the
+   * first they'd hear of it is a sell reverting at the wall, holding a memecoin
+   * they can't exit.
+   *
+   * Emitted when the set CHANGES (token added, or grant re-signed to cover it),
+   * not every tick: the fact is static until one side moves.
+   */
+  let lastCoverageKey: string | null = null;
+  async function noteTokenCoverage(agentId: string): Promise<void> {
+    const { uncovered } = tokenCoverage(cfg.customTokens, active?.grant ?? null);
+    const key = uncovered
+      .map((t) => t.address.toLowerCase())
+      .sort()
+      .join(",");
+    if (key === lastCoverageKey) return;
+    lastCoverageKey = key;
+    if (!uncovered.length) return;
+    const names = uncovered.map((t) => t.symbol).join(", ");
+    console.log(`[worker] grant does not cover ${names} — re-sign at /grant to trade them`);
+    await addEvent(
+      agentId,
+      "warn",
+      `your key can't sell ${names} — the tradable list is sealed into the signature, ` +
+        `so adding a token in settings doesn't widen it. Re-sign at /grant (free, same wallet, same funds).`,
+    );
+  }
 
   /**
    * Reconcile in-memory state with the grant file. Returns true if an agent is
@@ -365,6 +400,10 @@ async function main() {
       `grant armed — executor ${executor ? "live" : "stubbed"}, ` +
         `spent ${fmt(spentTodayUsdg)} USDG / ${opsToday} ops in trailing 24h`,
     );
+    // A fresh grant may have widened (or narrowed) what it covers — re-evaluate
+    // against the current settings rather than carrying the old verdict forward.
+    lastCoverageKey = null;
+    await noteTokenCoverage(agentId);
     return true;
   }
 

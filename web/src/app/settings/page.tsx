@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { LogoMark } from "@/components/Logo";
+import { isValidCustomToken, type CustomToken } from "@merrymen/core";
 import type { SettingsView } from "@/app/api/settings/route";
 import type { TelegramStatus } from "@/app/api/telegram/route";
 
@@ -54,6 +55,11 @@ export default function SettingsPage() {
   // Agent mode (/agent): master + free-form shell toggle (also booleans).
   const [agentEnabled, setAgentEnabled] = useState<boolean | null>(null);
   const [agentAutoShell, setAgentAutoShell] = useState<boolean | null>(null);
+  // Owner-added tokens (memecoins). A list of objects, so it can't ride `draft`
+  // either. null = untouched this session; the server value stands.
+  const [tokens, setTokens] = useState<CustomToken[] | null>(null);
+  const [newToken, setNewToken] = useState({ symbol: "", address: "", decimals: "18" });
+  const [tokenError, setTokenError] = useState<string | null>(null);
 
   const loadTelegram = () =>
     fetch("/api/telegram")
@@ -95,11 +101,39 @@ export default function SettingsPage() {
     setSymbols(current.includes(sym) ? current.filter((s) => s !== sym) : [...current, sym]);
   }
 
+  /** Add a token to the draft list. The server validates again — this is just
+   *  so a typo is caught here rather than after a round-trip. */
+  function addToken() {
+    setTokenError(null);
+    const candidate = {
+      symbol: newToken.symbol.trim(),
+      address: newToken.address.trim(),
+      decimals: Number(newToken.decimals),
+    };
+    if (!isValidCustomToken(candidate)) {
+      setTokenError("needs a short symbol, a full 0x… address (42 chars) and whole-number decimals");
+      return;
+    }
+    const current = tokens ?? (view?.values.customTokens as CustomToken[] | undefined) ?? [];
+    if (current.some((t) => t.address.toLowerCase() === candidate.address.toLowerCase())) {
+      setTokenError(`${candidate.address.slice(0, 10)}… is already in the list`);
+      return;
+    }
+    setTokens([...current, candidate]);
+    setNewToken({ symbol: "", address: "", decimals: "18" });
+  }
+
+  function removeToken(address: string) {
+    const current = tokens ?? (view?.values.customTokens as CustomToken[] | undefined) ?? [];
+    setTokens(current.filter((t) => t.address.toLowerCase() !== address.toLowerCase()));
+  }
+
   async function save() {
     setStatus("saving…");
     setErrors([]);
     const body: Record<string, unknown> = { ...draft };
     if (symbols !== null) body.basketSymbols = symbols;
+    if (tokens !== null) body.customTokens = tokens;
     if (tgEnabled !== null) body.telegramEnabled = tgEnabled;
     if (tgControl !== null) body.telegramControlEnabled = tgControl;
     if (tgTransfer !== null) body.telegramTransferEnabled = tgTransfer;
@@ -140,6 +174,7 @@ export default function SettingsPage() {
       setAppList(null);
       setAgentEnabled(null);
       setAgentAutoShell(null);
+      setTokens(null);
       const fresh = await fetch("/api/settings");
       if (fresh.ok) setView((await fresh.json()) as SettingsView);
       void loadTelegram();
@@ -160,6 +195,8 @@ export default function SettingsPage() {
 
   const d = view.defaults;
   const activeSymbols = symbols ?? view.values.basketSymbols ?? d.basketSymbols;
+  const activeTokens =
+    tokens ?? ((view.values.customTokens as CustomToken[] | undefined) ?? []);
   const secretPlaceholder = (s: { set: boolean; hint: string | null }) =>
     s.set ? `saved ····${s.hint ?? ""} — type to replace` : "not set";
 
@@ -351,6 +388,64 @@ export default function SettingsPage() {
             {activeSymbols.length === 0
               ? "select at least one symbol (empty falls back to the default basket)"
               : `trading ${activeSymbols.join(" · ")}`}
+          </div>
+
+          {/* ── OWNER-ADDED TOKENS (memecoins) ─────────────────────────────
+              Deliberately separate from the basket: those are issuer-backed
+              stocks with Chainlink feeds, these are whatever the owner pastes.
+              Adding one here does NOT make it tradable — the tradable list is
+              sealed into the signed key — so the /grant re-sign is spelled out
+              rather than left to be discovered as a reverted trade. */}
+          <div className="settings-subtle mono">your own tokens · memecoins &amp; anything else on 4663</div>
+          {activeTokens.length > 0 && (
+            <div className="token-list">
+              {activeTokens.map((t) => (
+                <div key={t.address.toLowerCase()} className="token-row mono">
+                  <b>{t.symbol}</b>
+                  <span className="token-addr">{t.address}</span>
+                  <span className="token-dec">{t.decimals}dp</span>
+                  <button type="button" className="copy-btn" onClick={() => removeToken(t.address)}>
+                    remove
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="grant-fields settings-grid">
+            <Field label="symbol">
+              <input
+                value={newToken.symbol}
+                placeholder="CATE"
+                onChange={(e) => setNewToken((n) => ({ ...n, symbol: e.target.value }))}
+              />
+            </Field>
+            <Field label="contract address">
+              <input
+                value={newToken.address}
+                placeholder="0x…"
+                onChange={(e) => setNewToken((n) => ({ ...n, address: e.target.value }))}
+              />
+            </Field>
+            <Field label="decimals" hint="18 for most tokens — check the contract if unsure">
+              <input
+                value={newToken.decimals}
+                inputMode="numeric"
+                onChange={(e) => setNewToken((n) => ({ ...n, decimals: e.target.value }))}
+              />
+            </Field>
+          </div>
+          <button type="button" className="copy-btn" onClick={addToken}>
+            add token
+          </button>
+          {tokenError && <div className="grant-note err">{tokenError}</div>}
+          <div className="grant-note">
+            Paste the contract address from the explorer — merrymen prices these from the Uniswap
+            pool (a time-averaged price, and only when the pool is deep enough to trust), never from
+            a Chainlink feed. Thin pools are refused rather than guessed at.
+            <br />
+            <b>Adding a token here doesn&apos;t let your merryman trade it yet.</b> The tradable list
+            lives inside your signed key, so save this, then{" "}
+            <Link href="/grant">re-sign at /grant</Link> — free, instant, same wallet and same funds.
           </div>
 
           {/* ── TELEGRAM (essentials: token + enable) ──────────────────── */}

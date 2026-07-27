@@ -51,9 +51,12 @@ import {
   TRADEABLE_SYMBOLS,
   UNISWAP,
   UNISWAP_SWAP_ROUTER_ABI,
+  builtinGrantTargets,
   chainForId,
+  isValidCustomToken,
   robinhoodTestnet,
   USDG_DECIMALS,
+  type CustomToken,
   type GrantCaps,
   type StoredGrant,
 } from "@merrymen/core";
@@ -102,6 +105,12 @@ async function mintGrant(
   caps: GrantCaps,
   onStatus: (status: string) => void,
   chainId: number,
+  /**
+   * Owner-added tokens to bake into the call policy alongside the built-in
+   * tradable set. Passing them is what actually lets the agent SELL them —
+   * adding a token in settings does nothing until a grant covering it is signed.
+   */
+  extraTokens: readonly CustomToken[] = [],
 ): Promise<Grant> {
   // Testnet is the sandbox; mainnet (4663) is real funds — the UI gates that
   // choice behind an explicit consent step. Note: the call-policy addresses
@@ -136,6 +145,20 @@ async function mintGrant(
     MORPHO.steakhouseUsdgVault as Address,
   ];
 
+  // Validate here too, at the last point before an address is sealed into an
+  // on-chain policy: a malformed entry would either brick the grant or silently
+  // widen it. Drop anything already covered by the built-in set or USDG so the
+  // policy has no duplicate permissions.
+  const builtinTargets = builtinGrantTargets();
+  const seenExtra = new Set<string>();
+  const dedupedExtras = extraTokens.filter((t) => {
+    if (!isValidCustomToken(t)) return false;
+    const key = t.address.toLowerCase();
+    if (builtinTargets.has(key) || seenExtra.has(key)) return false;
+    seenExtra.add(key);
+    return true;
+  });
+
   const policies = [
     // Hard expiry — the key dies even if every other control fails.
     toTimestampPolicy({ validAfter: now, validUntil: expiresAt }),
@@ -162,6 +185,19 @@ async function mintGrant(
         // not USDG-comparable — routers can only pull what's approved, and the USDG
         // cap above bounds what the agent could ever have bought in the first place.
         ...STOCK_TOKENS.filter((t) => (TRADEABLE_SYMBOLS as readonly string[]).includes(t.symbol)).map(
+          (t) =>
+            ({
+              target: t.address as Address,
+              valueLimit: 0n,
+              abi: erc20Abi,
+              functionName: "approve",
+              args: [{ condition: ParamCondition.ONE_OF, value: allowedSpenders }, null],
+            }) as const,
+        ),
+        // Owner-added tokens (memecoins), same shape and same routers. These are
+        // here ONLY because the owner explicitly listed them and is signing this
+        // grant right now — which is exactly why the wall can't widen by itself.
+        ...dedupedExtras.map(
           (t) =>
             ({
               target: t.address as Address,
@@ -248,6 +284,9 @@ async function mintGrant(
     expiresAt,
     chainId: chain.id,
     grantFeatures: ["transfer"],
+    // What this signature ACTUALLY covers — the worker compares it against the
+    // owner's configured tokens and says so when they've drifted apart.
+    grantTokens: dedupedExtras.map((t) => t.address.toLowerCase()),
     demoSessionPrivateKey: sessionPrivateKey,
     demoOwnerPrivateKey: ownerPrivateKey,
   };
@@ -277,9 +316,10 @@ export async function createAgentWallet(
   caps: GrantCaps,
   onStatus: (status: string) => void,
   chainId: number = robinhoodTestnet.id,
+  extraTokens: readonly CustomToken[] = [],
 ): Promise<Grant> {
   onStatus("minting your agent's owner key…");
-  return mintGrant(generatePrivateKey(), caps, onStatus, chainId);
+  return mintGrant(generatePrivateKey(), caps, onStatus, chainId, extraTokens);
 }
 
 /**
@@ -288,15 +328,20 @@ export async function createAgentWallet(
  * key re-derives the SAME smart account, so a wallet you already funded comes
  * back to life with a brand-new session key and whatever caps you pick now.
  * Nothing moves on-chain; no funds are touched.
+ *
+ * This is also the RE-SIGN path for widening the tradable set: adding a token in
+ * settings can't reach into an already-signed key, so covering it means minting
+ * a new grant over the same account. Same address, same funds, new wall.
  */
 export async function restoreAgentWallet(
   ownerPrivateKey: `0x${string}`,
   caps: GrantCaps,
   onStatus: (status: string) => void,
   chainId: number = robinhoodTestnet.id,
+  extraTokens: readonly CustomToken[] = [],
 ): Promise<Grant> {
   onStatus("re-deriving your smart account from the owner key…");
-  return mintGrant(ownerPrivateKey, caps, onStatus, chainId);
+  return mintGrant(ownerPrivateKey, caps, onStatus, chainId, extraTokens);
 }
 
 export interface OwnerPreview {
