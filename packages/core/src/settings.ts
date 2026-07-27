@@ -128,6 +128,28 @@ export interface MerrymenSettings {
    * TWAP and divergence guards as anything else before it can be valued.
    */
   bitqueryApiKey?: string;
+  /**
+   * SCOUT MODE — buying tokens too new or too thin to price.
+   *
+   * A freshly launched pool has no TWAP history and almost no depth, which is
+   * exactly the shape a price anyone can push takes. merrymen refuses to VALUE
+   * such a token, and that refusal is load-bearing: equity, P&L and the drawdown
+   * breaker all read those numbers.
+   *
+   * Scout mode doesn't weaken that. It quarantines instead: a scout position is
+   * carried at what it COST — a historical fact nobody can move — never at a
+   * pool reading, and the total that may sit in that state is hard-capped.
+   *
+   * The honest limit, stated plainly: the drawdown breaker cannot protect this
+   * money, because protecting it would mean trusting the price it can't verify.
+   * `scoutBudgetUsdg` IS the risk control for scout capital. Treat it as money
+   * you have decided you can lose.
+   */
+  scoutEnabled?: boolean;
+  /** Max USDG of COST that may sit in unpriceable positions at once. 0 = off. */
+  scoutBudgetUsdg?: number;
+  /** Max USDG into any single unpriceable token. */
+  scoutPerTokenUsdg?: number;
   /** Master switch — OFF by default. When on (and a key is set), landed/rejected
    * trades and the daily report are PUBLISHED to your agent's Virtuals page.
    * Outbound + public: nothing streams until you turn this on. */
@@ -236,6 +258,12 @@ export const SETTINGS_DEFAULTS = {
   // deep end and refuses the rest until the owner explicitly loosens it.
   minPoolLiquidityUsdg: 25_000,
   maxPriceDivergenceBps: 500,
+  // Scout mode is OFF and ZERO by default. Buying what you cannot price is a
+  // real decision with a real downside, so it is never the default and never
+  // inherits the main budget — the owner has to name a number themselves.
+  scoutEnabled: false,
+  scoutBudgetUsdg: 0,
+  scoutPerTokenUsdg: 25,
   buyPerTickUsdg: 25,
   idleFloorUsdg: 50,
   gapEnterBudgetUsdg: 75,

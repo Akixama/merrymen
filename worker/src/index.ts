@@ -79,6 +79,7 @@ import { createStateRef, ensureLinkCode } from "./telegram/state";
 import { readPositionRaw } from "./telegram/reads";
 import { ensureSoul, getName } from "./soul";
 import { readPositions, type Position } from "./positions";
+import { quarantineOf } from "./quarantine";
 import { mainnetClient, readAccountBalances, readMarketSafety, setMainnetRpc } from "./snapshot";
 import { applyFill } from "./basis";
 import {
@@ -1065,8 +1066,31 @@ async function main() {
     // understate it and trip the drawdown breaker on arithmetic rather than loss.
     // Equity, the HWM, the performance fee and the breaker are all skipped for
     // this tick; strategies still run, so the owner can always get out.
-    const bookIncomplete = unpricedByDesign.length > 0;
-    if (bookIncomplete && !notedUnpriced) {
+    // QUARANTINE. An unpriceable holding is carried at what it COST — a
+    // historical fact nobody can push — instead of blinding the whole book.
+    //
+    // This used to pause equity, the high-water mark, the fee accrual and the
+    // drawdown breaker outright, for every position the owner held, the moment
+    // ONE dust token became unpriceable. The deep, Chainlink-priced majority of
+    // the book lost its safety net over an asset worth pennies.
+    //
+    // Carrying at cost is NOT a valuation and is labelled as such everywhere it
+    // surfaces. It keeps the arithmetic sound so the breaker can go on judging
+    // the part of the book it can actually protect. What it cannot do is notice
+    // a quarantined token going to zero — which is why the scout BUDGET, not the
+    // breaker, is the risk control for this money.
+    const quarantine = quarantineOf(
+      unpricedByDesign,
+      (symbol) => getBasis(agentId, paper ? "paper" : "live", symbol).costUsdg,
+      (symbol) => poolRefusals.get(symbol),
+    );
+    // The book is only genuinely UNKNOWN when a quarantined holding has no
+    // recorded cost either — then we know neither what it's worth nor what was
+    // paid, and there is no honest number to put in. When the agent bought it,
+    // the basis is on record and cost carries the arithmetic just fine.
+    const unknownCost = quarantine.holdings.filter((h) => h.costUsdg === 0n).map((h) => h.symbol);
+    const bookIncomplete = unknownCost.length > 0;
+    if (unpricedByDesign.length > 0 && !notedUnpriced) {
       notedUnpriced = true; // once per run, not once per tick — this never clears
       // Say WHY. "No price feed" was true but useless once pool pricing exists:
       // the owner needs to know whether the pool is too thin, being pushed right
@@ -1081,12 +1105,15 @@ async function main() {
         `held ${why} — can't be valued, so the book can't be totalled. Trading stays OPEN (you can still sell), but equity, P&L and the drawdown breaker are paused until it's out of the book`,
       );
     }
-    if (!bookIncomplete) notedUnpriced = false;
+    if (unpricedByDesign.length === 0) notedUnpriced = false;
 
     const positionsUsdg = positions.reduce((sum, p) => sum + p.valueUsdg, 0n);
-    // Equity is the whole book — cash, vault, and multiplier-aware stock value —
-    // so the drawdown breaker judges reality, not just the cash ledger.
-    const equityUsdg = balances.cashUsdg + balances.vaultUsdg + positionsUsdg;
+    // Equity is the whole book — cash, vault, multiplier-aware stock value, and
+    // quarantined holdings at cost. The cost term is what stops a scout buy from
+    // reading as an instant loss: cash left the wallet, so without it equity
+    // would drop by the full spend and book a drawdown that never happened.
+    const equityUsdg =
+      balances.cashUsdg + balances.vaultUsdg + positionsUsdg + quarantine.totalCostUsdg;
 
     // Reconcile LIVE cost basis against the chain. Live fills are booked from the
     // pre-trade quote (we don't parse receipts yet), so the tracked quantity can
@@ -1129,7 +1156,7 @@ async function main() {
     // the drawdown one would trip the breaker on a token we simply can't price.
     // Skipped entirely; strategies below still run, so the position can be sold.
     if (bookIncomplete) {
-      console.log(`[account] book incomplete (${unpricedByDesign.join(",")} unpriced) — equity, HWM, fee and breaker skipped this tick`);
+      console.log(`[account] book incomplete (${unknownCost.join(",")} unpriced AND no cost on record) — equity, HWM, fee and breaker skipped this tick`);
     } else if (paper) {
       // Paper profit accrues NO fees and never touches the persistent agent
       // HWM — mixing paper peaks into real accounting would trip the breaker
