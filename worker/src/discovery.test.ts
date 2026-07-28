@@ -90,6 +90,8 @@ describe("describeDiscovery — what the owner is told", () => {
     createdAt: 0,
     liquidityUsdg: 120_000_000_000n, // $120k
     priceable: true,
+    price8: 100_000n,
+    fdvUsd: 800_000,
   };
 
   it("names the token, its depth and whether it can be priced", () => {

@@ -182,6 +182,10 @@ function getDb(): DatabaseSync {
     // presenting both as the same kind of number. Old rows default to chainlink,
     // which is what they were — nothing else could produce a price back then.
     "ALTER TABLE positions ADD COLUMN price_source TEXT NOT NULL DEFAULT 'chainlink'",
+    // Discovery grew from "have I announced this" into "is it worth entering".
+    "ALTER TABLE discovered_pools ADD COLUMN decimals INTEGER NOT NULL DEFAULT 18",
+    "ALTER TABLE discovered_pools ADD COLUMN liquidity_usd REAL NOT NULL DEFAULT 0",
+    "ALTER TABLE discovered_pools ADD COLUMN fdv_usd REAL NOT NULL DEFAULT 0",
   ]) {
     try {
       db.exec(ddl);
@@ -731,5 +735,113 @@ export function markPoolSeen(address: string, symbol: string): void {
     );
   } catch (e) {
     console.error("[store] discovered_pools insert failed:", e);
+  }
+}
+
+// ── discovery candidates + trench positions ────────────────────────────────
+
+export interface PoolCandidate {
+  address: string;
+  symbol: string;
+  decimals: number;
+  liquidityUsd: number;
+  fdvUsd: number;
+  firstSeen: number;
+}
+
+/**
+ * Remember a discovered pair WITH the numbers a decision needs.
+ *
+ * Discovery previously stored only an address, which was enough to avoid
+ * announcing twice and useless for anything else — a strategy asking "is this
+ * worth entering" would have had to re-derive every figure from scratch.
+ * `first_seen` doubles as the age baseline: the pool's own creation time isn't
+ * always available, and the moment we first saw it is at least a fact.
+ */
+export function recordCandidate(c: PoolCandidate): void {
+  try {
+    getDb()
+      .prepare(
+        `INSERT INTO discovered_pools (address, symbol, decimals, liquidity_usd, fdv_usd)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(address) DO UPDATE SET
+           symbol = excluded.symbol, decimals = excluded.decimals,
+           liquidity_usd = excluded.liquidity_usd, fdv_usd = excluded.fdv_usd`,
+      )
+      .run(c.address.toLowerCase(), c.symbol.slice(0, 16), c.decimals, c.liquidityUsd, c.fdvUsd);
+  } catch (e) {
+    console.error("[store] candidate upsert failed:", e);
+  }
+}
+
+/** Candidates seen within `maxAgeSec`, freshest first. */
+export function recentCandidates(maxAgeSec: number, limit = 25): PoolCandidate[] {
+  try {
+    const rows = getDb()
+      .prepare(
+        `SELECT address, symbol, decimals, liquidity_usd, fdv_usd, first_seen
+         FROM discovered_pools WHERE first_seen > unixepoch() - ?
+         ORDER BY first_seen DESC LIMIT ?`,
+      )
+      .all(maxAgeSec, limit) as {
+      address: string; symbol: string; decimals: number;
+      liquidity_usd: number; fdv_usd: number; first_seen: number;
+    }[];
+    return rows.map((r) => ({
+      address: r.address,
+      symbol: r.symbol,
+      decimals: Number(r.decimals) || 18,
+      liquidityUsd: Number(r.liquidity_usd) || 0,
+      fdvUsd: Number(r.fdv_usd) || 0,
+      firstSeen: Number(r.first_seen) || 0,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The entry baseline a trench exit is judged against.
+ *
+ * Only depth and time live here. Entry PRICE is derived from cost basis
+ * instead — that ledger already tracks exactly what was paid per raw unit, and
+ * a second copy could disagree with it after a partial fill.
+ */
+export function setTrenchEntry(agentId: string, mode: BasisMode, symbol: string, liquidityUsd: number): void {
+  try {
+    getDb()
+      .prepare(
+        `INSERT INTO trench_positions (agent_id, mode, symbol, entry_liquidity_usd)
+         VALUES (?, ?, ?, ?) ON CONFLICT(agent_id, mode, symbol) DO NOTHING`,
+      )
+      .run(agentId, mode, symbol, liquidityUsd);
+  } catch (e) {
+    console.error("[store] trench entry insert failed:", e);
+  }
+}
+
+export function getTrenchEntry(
+  agentId: string,
+  mode: BasisMode,
+  symbol: string,
+): { liquidityUsd: number; entrySec: number } | null {
+  try {
+    const row = getDb()
+      .prepare("SELECT entry_liquidity_usd, entry_sec FROM trench_positions WHERE agent_id = ? AND mode = ? AND symbol = ?")
+      .get(agentId, mode, symbol) as { entry_liquidity_usd: number; entry_sec: number } | undefined;
+    return row ? { liquidityUsd: Number(row.entry_liquidity_usd), entrySec: Number(row.entry_sec) } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Forget a closed position, so re-entering later starts a fresh baseline. */
+export function clearTrenchEntry(agentId: string, mode: BasisMode, symbol: string): void {
+  try {
+    getDb()
+      .prepare("DELETE FROM trench_positions WHERE agent_id = ? AND mode = ? AND symbol = ?")
+      .run(agentId, mode, symbol);
+  } catch {
+    /* nothing to clear */
   }
 }

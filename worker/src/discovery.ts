@@ -8,12 +8,15 @@
  * genesis, which is the only way those become visible at all.
  *
  * WHAT THIS IS EXPLICITLY NOT. It does not add tokens, widen a cap, or produce a
- * trade. A surfaced pair is a message to a human; acting on it still costs the
- * owner two deliberate steps — adding the token in /settings and re-signing at
- * /grant — exactly as if they'd found it themselves. Nothing here is on the
- * dispose side of the wall, and it must stay that way: a discovery feed that
- * could open positions would be a feed that decides what to buy, which is the
- * one thing the whole permission model exists to prevent.
+ * trade. This module only ever REPORTS and records what it found.
+ *
+ * The `trencher` strategy can act on those records — but only when the owner has
+ * selected it, and in live mode only for a token they added and re-signed the
+ * grant to cover. So the sequence stays owner → wall → agent, never feed →
+ * agent. Nothing here is on the dispose side, and it must stay that way: a
+ * discovery feed that could open positions BY ITSELF would be a feed that
+ * decides what to buy, which is the one thing the permission model exists to
+ * prevent. Recording a candidate is not deciding to hold it.
  *
  * It also runs on its OWN slow cadence, not the trading tick. The holder gateway
  * allows a handful of calls a minute across everything a wallet does, and a
@@ -25,6 +28,7 @@ import type { PublicClient } from "viem";
 import { parseAbi } from "viem";
 import { CASH, type StockToken } from "../../packages/core/src/index";
 import { poolPriceUsable, readRoutedPrice } from "./venues/pool-price";
+import { readTokenStats } from "./venues/token-stats";
 import { recentPools, resolveBitquery, type BitqueryCreds, type NewPair } from "./venues/bitquery";
 
 const ERC20 = parseAbi([
@@ -45,6 +49,14 @@ export interface Discovery {
   priceable: boolean;
   /** When it wouldn't, the guard's own words. */
   reason?: string;
+  /** Guarded price, 8dp — null when it couldn't be priced. */
+  price8: bigint | null;
+  /**
+   * Fully diluted value, supply × price. Null when unpriceable or unreadable.
+   * FDV, not market cap — see token-stats.ts for why the distinction matters
+   * when the number is about to gate spending.
+   */
+  fdvUsd: number | null;
 }
 
 /**
@@ -128,6 +140,8 @@ export async function discoverPools(deps: DiscoveryDeps): Promise<Discovery[]> {
     let liquidityUsdg: bigint | null = null;
     let priceable = false;
     let reason: string | undefined;
+    let price8: bigint | null = null;
+    let fdvUsd: number | null = null;
     try {
       const routed = await readRoutedPrice(deps.client, {
         token,
@@ -143,12 +157,20 @@ export async function discoverPools(deps: DiscoveryDeps): Promise<Discovery[]> {
         const verdict = poolPriceUsable(routed, deps.guard);
         priceable = verdict.ok;
         if (!verdict.ok) reason = verdict.reason;
+        // FDV only from a price that PASSED the guards. Deriving it from an
+        // unguarded reading would produce a valuation anyone could move — and
+        // this figure gates whether money gets spent.
+        if (verdict.ok) {
+          price8 = routed.price8;
+          const stats = await readTokenStats(deps.client, { token, price8: routed.price8, decimals });
+          fdvUsd = stats?.fdvExBurnedUsd ?? null;
+        }
       }
     } catch {
       reason = "couldn't read its pool";
     }
 
-    out.push({ token, symbol, decimals, createdAt: 0, liquidityUsdg, priceable, reason });
+    out.push({ token, symbol, decimals, createdAt: 0, liquidityUsdg, priceable, reason, price8, fdvUsd });
   }
   return out;
 }
@@ -169,10 +191,11 @@ export function describeDiscovery(d: Discovery): string {
     d.liquidityUsdg === null
       ? "depth unknown"
       : `$${(Number(d.liquidityUsdg) / 1e6).toLocaleString(undefined, { maximumFractionDigits: 0 })} deep`;
+  const fdv = d.fdvUsd === null ? "" : ` · FDV ${Math.round(d.fdvUsd).toLocaleString()}`;
   const verdict = d.priceable
     ? "deep enough for me to price"
     : `I can't price it yet — ${d.reason ?? "guards refused it"}`;
-  return `🌱 new pair: ${d.symbol} (${d.token.slice(0, 10)}…) · ${depth} · ${verdict}`;
+  return `🌱 new pair: ${d.symbol} (${d.token.slice(0, 10)}…) · ${depth}${fdv} · ${verdict}`;
 }
 
 export { resolveBitquery };

@@ -56,7 +56,7 @@ export interface SettingsView {
 const STRATEGIES_DIR = homePaths.strategies();
 // Free + Merry Circle (holder-gated) builtins — both selectable; the worker runs
 // the Circle ones only for $MERRYMEN holders. Mirrors worker/src/strategies/registry.ts.
-const BUILTIN_STRATEGIES = ["steady-basket", "weekend-gap", "llm-strategist", "even-keel", "dip-hunter"];
+const BUILTIN_STRATEGIES = ["steady-basket", "weekend-gap", "llm-strategist", "trencher", "even-keel", "dip-hunter"];
 
 async function listCustomStrategies(): Promise<string[]> {
   try {

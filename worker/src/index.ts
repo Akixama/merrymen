@@ -70,6 +70,7 @@ import {
   type ResolvedConfig,
 } from "./settings";
 import { BUILTIN_STRATEGIES, buildStrategy, isCircleStrategy, watchTokensFor } from "./strategies/registry";
+import { TRENCHER_DEFAULTS, type Candidate, type OpenPosition } from "./strategies/trencher";
 import { createPoolPriceReader } from "./venues/pool-prices";
 import { customStrategiesDir, resolveStrategyFile } from "./strategies/custom";
 import type { Holding, Snapshot, Strategy } from "./strategies/types";
@@ -106,8 +107,13 @@ import {
   setAgentName,
   setAgentHwm,
   setAgentStatus,
+  clearTrenchEntry,
+  getTrenchEntry,
   markPoolSeen,
+  recentCandidates,
+  recordCandidate,
   seenPools,
+  setTrenchEntry,
   setPositions,
   type TradeRow,
 } from "./store";
@@ -217,6 +223,12 @@ async function main() {
       // Resolve legs against the full watch set, so a selected memecoin is a
       // leg a strategy can actually trade rather than a balance it can only see.
       universe: watchTokensFor(c.basketSymbols, c.customTokens),
+      trench: {
+        usdgToken: CASH.USDG as `0x${string}`,
+        candidates: trenchCandidates,
+        open: trenchOpen,
+        liquidityOf: (token) => lastLiquidityUsd.get(token.toLowerCase()) ?? null,
+      },
       usdg6: usdg,
       basketSymbols: c.basketSymbols,
       buyPerTickUsdg: c.buyPerTickUsdg,
@@ -347,6 +359,13 @@ async function main() {
     // these keys can't collide — but merging in this direction makes that
     // explicit rather than incidental.
     for (const [symbol, quote] of quotes) if (!prices.has(symbol)) prices.set(symbol, quote);
+    // Depth per token, so a trench exit can tell a drain from a price move.
+    for (const t of feedless) {
+      const q = quotes.get(t.symbol);
+      if (!q?.detail) continue;
+      const m = /\$([\d,]+)\s+deep/.exec(q.detail);
+      if (m) lastLiquidityUsd.set(t.address.toLowerCase(), Number(m[1]!.replace(/,/g, "")));
+    }
 
     poolRefusals = new Map(refused.map((r) => [r.symbol, r.reason]));
     // Key on the refusal KIND, never the prose. The reasons embed a live pool
@@ -394,6 +413,74 @@ async function main() {
    * deliberate steps as one they found themselves: add it in /settings, re-sign
    * at /grant. That is the point, not a limitation.
    */
+  /** Depth per token from the last pool read — what an exit judges a drain against. */
+  const lastLiquidityUsd = new Map<string, number>();
+
+  /**
+   * Candidates the trencher may enter.
+   *
+   * GATED TO PAPER MODE, deliberately. In live mode a token must be added in
+   * /settings and covered by a re-signed grant before anything can touch it —
+   * that is the wall, and discovery must not become a way around it. Paper mode
+   * has no signing and no grant, so there is nothing to route around: it is the
+   * one place a discovery feed can drive entries without weakening anything.
+   *
+   * Live trenching is reachable, it just costs the owner the same two deliberate
+   * steps as any other token. That is the feature, not a limitation.
+   */
+  function trenchCandidates(): Candidate[] {
+    if (!paperActive()) return [];
+    const nowSec = Math.floor(Date.now() / 1000);
+    const out: Candidate[] = [];
+    for (const c of recentCandidates(TRENCHER_DEFAULTS.maxAgeSec, 25)) {
+      const quote = lastPrices.get(c.symbol);
+      out.push({
+        symbol: c.symbol,
+        token: c.address as `0x${string}`,
+        decimals: c.decimals,
+        // Priceable means THIS tick could price it, not that discovery once
+        // could — a pool that has since thinned must not still read as fine.
+        priceable: !!quote && quote.price8 > 0n,
+        liquidityUsd: lastLiquidityUsd.get(c.address.toLowerCase()) ?? c.liquidityUsd,
+        fdvUsd: c.fdvUsd,
+        ageSec: Math.max(0, nowSec - c.firstSeen),
+        price8: quote?.price8 ?? 0n,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Open trench positions, with the baseline their exits are judged against.
+   *
+   * Entry PRICE comes from the cost-basis ledger rather than a stored copy: that
+   * ledger already tracks exactly what was paid per raw unit and survives
+   * partial fills, so a second copy could only ever disagree with it.
+   */
+  function trenchOpen(): OpenPosition[] {
+    if (!active) return [];
+    const mode: BasisMode = paperActive() ? "paper" : "live";
+    const out: OpenPosition[] = [];
+    for (const t of watchTokens) {
+      const basis = getBasis(active.agentId, mode, t.symbol);
+      if (basis.qtyRaw <= 0n || basis.costUsdg <= 0n) continue;
+      const entry = getTrenchEntry(active.agentId, mode, t.symbol);
+      if (!entry) continue; // not a trench entry — another strategy's position
+      // costUsdg(6dp) / qty(10^dec) → USD per whole token at 8dp.
+      const entryPrice8 =
+        (basis.costUsdg * 10n ** BigInt(t.decimals ?? 18) * 100n) / basis.qtyRaw;
+      out.push({
+        symbol: t.symbol,
+        token: t.address,
+        entryPrice8,
+        entryLiquidityUsd: entry.liquidityUsd,
+        entrySec: entry.entrySec,
+        costUsdg: basis.costUsdg,
+      });
+    }
+    return out;
+  }
+
   let lastDiscoveryAt = 0;
   async function runDiscovery(agentId: string): Promise<void> {
     if (!cfg.discoveryEnabled) return;
@@ -428,6 +515,18 @@ async function main() {
       // quiet than repeat ourselves every poll — a feed that duplicates stops
       // being read, and the owner can always look the token up.
       markPoolSeen(d.token, d.symbol);
+      // Record the NUMBERS too, not just that we saw it. Without them a
+      // strategy asking "is this worth entering" would have to re-derive
+      // everything, and the figures it re-derived would be from a later moment
+      // than the one the owner was told about.
+      recordCandidate({
+        address: d.token,
+        symbol: d.symbol,
+        decimals: d.decimals,
+        liquidityUsd: d.liquidityUsdg === null ? 0 : Number(d.liquidityUsdg) / 1e6,
+        fdvUsd: d.fdvUsd ?? 0,
+        firstSeen: 0, // the store stamps this itself
+      });
       const line = describeDiscovery(d);
       console.log(`[discovery] ${line}`);
       await addEvent(
@@ -629,6 +728,20 @@ async function main() {
     const prev = getBasis(agentId, mode, f.symbol);
     const r = applyFill(prev, { side: f.side, qtyRaw: f.qtyRaw, cashUsdg: f.cashUsdg });
     setBasis(agentId, mode, f.symbol, r.basis);
+
+    // Trench bookkeeping. The baseline is stamped on the FIRST buy only (the
+    // insert is ON CONFLICT DO NOTHING), so topping up doesn't quietly reset the
+    // stop-loss reference to a worse price — which would turn averaging down
+    // into a way of never stopping out.
+    if (cfg.strategy === "trencher") {
+      const tok = watchTokens.find((t) => t.symbol === f.symbol);
+      if (f.side === "buy" && tok) {
+        setTrenchEntry(agentId, mode, f.symbol, lastLiquidityUsd.get(tok.address.toLowerCase()) ?? 0);
+      }
+      // Flat again: forget the baseline so a later re-entry starts fresh rather
+      // than being judged against a position that closed hours ago.
+      if (f.side === "sell" && r.basis.qtyRaw <= 0n) clearTrenchEntry(agentId, mode, f.symbol);
+    }
     if (r.basisUnknown) {
       // A holding with no tracked cost (opened before basis existed, or drifted).
       // Say so rather than reporting a number we can't stand behind.

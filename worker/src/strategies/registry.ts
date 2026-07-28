@@ -14,10 +14,11 @@ import { steadyBasketTick, type SteadyBasketConfig } from "./steady-basket";
 import { weekendGapTick, type WeekendGapConfig } from "./weekend-gap";
 import { evenKeelTick, type EvenKeelConfig } from "./even-keel";
 import { makeDipHunter, type DipHunterConfig } from "./dip-hunter";
+import { makeTrencher, TRENCHER_DEFAULTS, type Candidate, type OpenPosition } from "./trencher";
 import type { Strategy } from "./types";
 
 /** Free, open strategies — available to everyone. */
-const FREE_STRATEGIES = ["steady-basket", "weekend-gap", "llm-strategist"] as const;
+const FREE_STRATEGIES = ["steady-basket", "weekend-gap", "llm-strategist", "trencher"] as const;
 /** Merry Circle strategies — buildable and selectable, but only RUN for holders
  * (Merry Man tier and up). The worker gates them at tick time by holder tier. */
 export const CIRCLE_STRATEGIES = ["even-keel", "dip-hunter"] as const;
@@ -51,6 +52,18 @@ export interface StrategyBuildOpts {
     onDecision?: (d: StrategistDecision) => void | Promise<void>;
   };
   onNote?: (level: "ok" | "warn", message: string) => void;
+  /**
+   * Everything the trencher needs, supplied by the tick. Absent = the strategy
+   * still builds but sees no candidates and no open positions, so it proposes
+   * nothing — an honest no-op rather than a crash, which is what a backtest or
+   * a fixture should get.
+   */
+  trench?: {
+    usdgToken: `0x${string}`;
+    candidates: () => readonly Candidate[];
+    open: () => readonly OpenPosition[];
+    liquidityOf: (token: `0x${string}`) => number | null;
+  };
 }
 
 /** Registry tokens for the chosen symbols — unknown symbols are ignored. */
@@ -151,6 +164,20 @@ export function buildStrategy(name: string, opts: StrategyBuildOpts): Strategy {
       onDecision: opts.llm.onDecision,
       provider: opts.llm.creds?.provider,
       model: opts.llm.creds?.model,
+    });
+  }
+  if (name === "trencher") {
+    // No trench context = no candidates and no positions, so it proposes
+    // nothing. A backtest or fixture gets an honest no-op rather than a crash.
+    const t = opts.trench;
+    return makeTrencher({
+      cfg: TRENCHER_DEFAULTS,
+      swapRouter: opts.swapRouter,
+      usdgToken: t?.usdgToken ?? (CASH.USDG as `0x${string}`),
+      candidates: t?.candidates ?? (() => []),
+      open: t?.open ?? (() => []),
+      liquidityOf: t?.liquidityOf ?? (() => null),
+      onNote: opts.onNote,
     });
   }
   if (name === "weekend-gap") {

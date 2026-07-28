@@ -374,7 +374,7 @@ export default function SettingsPage() {
             </Field>
             <Field
               label="strategy"
-              hint="steady-basket = DCA + vault sweep · weekend-gap = trade the close→open gap · llm-strategist = Claude proposes, policy disposes. Your own bots from strategies/ appear below the line."
+              hint="steady-basket = DCA + vault sweep · weekend-gap = trade the close→open gap · llm-strategist = Claude proposes, policy disposes · trencher = enters newly launched tokens on chain-read signals and exits on a stop, a target, or liquidity leaving (PAPER MODE ONLY for now). Your own bots from strategies/ appear below the line."
             >
               <select value={v("strategy") || d.strategy} onChange={set("strategy")}>
                 {view.strategies.builtin.map((s) => (
