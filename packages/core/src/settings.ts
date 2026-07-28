@@ -129,6 +129,20 @@ export interface MerrymenSettings {
    */
   bitqueryApiKey?: string;
   /**
+   * A Merry Circle gateway token (secret), claimed by signing at the gateway's
+   * /claim page with a wallet holding $MERRYMEN.
+   *
+   * STANDALONE ON PURPOSE. The same token opens both the gateway's brain and its
+   * Bitquery route, but the two choices are independent: an owner may well want
+   * Claude or Groq thinking while still using the Circle's Bitquery quota. It
+   * was originally read off the LLM key, which silently made gateway discovery
+   * impossible for anyone not also using the gateway's model.
+   *
+   * Your OWN bitqueryApiKey always wins over this — your quota, your limits, no
+   * third party in the path.
+   */
+  merrymenToken?: string;
+  /**
    * Discovery: poll Bitquery for newly launched pairs and TELL the owner.
    * Defaults ON, because it only runs when a Bitquery key or a holder token is
    * configured — supplying one is the opt-in. It can never trade: a surfaced
@@ -230,6 +244,7 @@ export const SECRET_SETTING_KEYS = [
   "telegramTranscribeKey",
   "virtualsApiKey",
   "bitqueryApiKey",
+  "merrymenToken",
 ] as const;
 export type SecretSettingKey = (typeof SECRET_SETTING_KEYS)[number];
 

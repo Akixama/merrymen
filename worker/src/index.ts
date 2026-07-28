@@ -401,7 +401,10 @@ async function main() {
       bitqueryApiKey: cfg.bitqueryApiKey,
       // The holder token doubles as the gateway credential — the same one the
       // brain claims. No Bitquery account needed for Circle members.
-      merrymenToken: cfg.llmProvider === "merrymen" ? cfg.llmApiKey : undefined,
+      // The standalone token first, then the LLM key when the brain IS the
+      // gateway — one claimed token opens both, but choosing the gateway for
+      // discovery must not force choosing it for thinking as well.
+      merrymenToken: cfg.merrymenToken ?? (cfg.llmProvider === "merrymen" ? cfg.llmApiKey : undefined),
     });
     if (!creds) return; // no key, no discovery — honest silence, not an error
     const nowSec = Math.floor(Date.now() / 1000);

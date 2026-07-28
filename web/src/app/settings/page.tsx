@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { LogoMark } from "@/components/Logo";
-import { isValidCustomToken, uncoveredBasketSymbols, type CustomToken, type StoredGrant } from "@merrymen/core";
+import { MERRYMEN_GATEWAY_ORIGIN, isValidCustomToken, uncoveredBasketSymbols, type CustomToken, type StoredGrant } from "@merrymen/core";
 import type { SettingsView } from "@/app/api/settings/route";
 import type { TelegramStatus } from "@/app/api/telegram/route";
 
@@ -1055,6 +1055,23 @@ export default function SettingsPage() {
               />
               {view.bitqueryApiKey.set && (
                 <button type="button" className="btn-kill settings-clear" onClick={() => setDraft((x) => ({ ...x, bitqueryApiKey: "" }))}>
+                  clear
+                </button>
+              )}
+            </Field>
+            <Field
+              label="merry circle token"
+              action={{ href: `${MERRYMEN_GATEWAY_ORIGIN}/claim`, label: "claim one" }}
+              hint="🏹 Holders only. Sign with your $MERRYMEN wallet to claim a token — then you need no Bitquery account of your own; discovery runs on the shared gateway. The same token also works as the Merrymen AI brain key, but the two are independent: use Claude for thinking and the gateway for discovery if you like. Your own Bitquery key above always takes precedence."
+            >
+              <input
+                type="password"
+                placeholder={secretPlaceholder(view.merrymenToken)}
+                value={draft.merrymenToken ?? ""}
+                onChange={set("merrymenToken")}
+              />
+              {view.merrymenToken.set && (
+                <button type="button" className="btn-kill settings-clear" onClick={() => setDraft((x) => ({ ...x, merrymenToken: "" }))}>
                   clear
                 </button>
               )}

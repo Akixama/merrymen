@@ -70,6 +70,8 @@ export interface ResolvedConfig {
   /** Virtuals API key (secret) — streams agent activity to its Virtuals page. */
   virtualsApiKey: string | undefined;
   bitqueryApiKey: string | undefined;
+  /** Merry Circle gateway token — opens the gateway brain AND its Bitquery route. */
+  merrymenToken: string | undefined;
   /** Master switch for Virtuals Terminal streaming (off by default). */
   virtualsEnabled: boolean;
   telegramBotToken: string | undefined;
@@ -250,6 +252,7 @@ export function mergeSettings(
     holderAddress,
     virtualsApiKey: str(file.virtualsApiKey, env.MERRYMEN_VIRTUALS_API_KEY),
     bitqueryApiKey: str(file.bitqueryApiKey, env.BITQUERY_API_KEY),
+    merrymenToken: str(file.merrymenToken, env.MERRYMEN_TOKEN),
     virtualsEnabled: bool(file.virtualsEnabled, env.MERRYMEN_VIRTUALS_ENABLED, d.virtualsEnabled),
     telegramBotToken: str(file.telegramBotToken, env.MERRYMEN_TELEGRAM_BOT_TOKEN),
     telegramEnabled: bool(file.telegramEnabled, env.MERRYMEN_TELEGRAM_ENABLED, d.telegramEnabled),
