@@ -45,6 +45,8 @@ export default function SettingsPage() {
   const [tgTransfer, setTgTransfer] = useState<boolean | null>(null);
   const [tgNotify, setTgNotify] = useState<boolean | null>(null);
   const [virtualsEnabled, setVirtualsEnabled] = useState<boolean | null>(null);
+  // Scout mode is a boolean, so it can't ride the string `draft`.
+  const [scoutEnabled, setScoutEnabled] = useState<boolean | null>(null);
   const [allowlist, setAllowlist] = useState<number[] | null>(null);
   const [tgTest, setTgTest] = useState<string | null>(null);
   // PC control: master + capability set + string allowlists (also can't ride `draft`).
@@ -148,6 +150,7 @@ export default function SettingsPage() {
     if (tgTransfer !== null) body.telegramTransferEnabled = tgTransfer;
     if (tgNotify !== null) body.telegramNotifyEnabled = tgNotify;
     if (virtualsEnabled !== null) body.virtualsEnabled = virtualsEnabled;
+    if (scoutEnabled !== null) body.scoutEnabled = scoutEnabled;
     if (allowlist !== null) body.telegramAllowlist = allowlist;
     if (pcEnabled !== null) body.telegramPcControlEnabled = pcEnabled;
     if (caps !== null) body.telegramCapabilities = caps;
@@ -176,6 +179,7 @@ export default function SettingsPage() {
       setTgTransfer(null);
       setTgNotify(null);
       setVirtualsEnabled(null);
+      setScoutEnabled(null);
       setAllowlist(null);
       setPcEnabled(null);
       setCaps(null);
@@ -229,6 +233,7 @@ export default function SettingsPage() {
   const tgTransferVal = tgTransfer ?? view.values.telegramTransferEnabled ?? d.telegramTransferEnabled;
   const tgNotifyVal = tgNotify ?? view.values.telegramNotifyEnabled ?? d.telegramNotifyEnabled;
   const virtualsEnabledVal = virtualsEnabled ?? view.values.virtualsEnabled ?? d.virtualsEnabled;
+  const scoutEnabledVal = scoutEnabled ?? view.values.scoutEnabled ?? d.scoutEnabled;
   const allowlistVal = allowlist ?? view.values.telegramAllowlist ?? [];
   const pcEnabledVal = pcEnabled ?? view.values.telegramPcControlEnabled ?? d.telegramPcControlEnabled;
   const agentEnabledVal = agentEnabled ?? view.values.telegramAgentEnabled ?? d.telegramAgentEnabled;
@@ -501,6 +506,76 @@ export default function SettingsPage() {
             <b>Adding a token here doesn&apos;t let your merryman trade it yet.</b> The tradable list
             lives inside your signed key, so save this, then{" "}
             <Link href="/grant">re-sign at /grant</Link> — free, instant, same wallet and same funds.
+          </div>
+
+          {/* ── SCOUT MODE ─────────────────────────────────────────────────
+              The one place merrymen will knowingly hold something it cannot
+              value. The copy has to be blunt about what that costs, because
+              the usual safety net genuinely does not apply here. */}
+          <div className="settings-subtle mono">scout mode · buying what can&apos;t be priced yet</div>
+          <p className="grant-note" style={{ marginTop: 0 }}>
+            A token that just launched has no price history and almost no depth, so any price you
+            could read from its pool is one someone could push. merrymen normally refuses to value
+            those at all. Scout mode lets your merryman buy them anyway — <b>quarantined</b>: the
+            position is carried at what it <i>cost</i>, never at a pool reading, and the total that
+            may sit that way is hard-capped.
+          </p>
+          <div className="grant-fields settings-grid">
+            <label className="field settings-field">
+              <span className="field-label">scout mode</span>
+              <span className="field-input">
+                <input
+                  type="checkbox"
+                  checked={scoutEnabledVal}
+                  onChange={(e) => setScoutEnabled(e.target.checked)}
+                  style={{ width: "auto" }}
+                />
+                <span className="field-unit">
+                  {scoutEnabledVal ? "may buy unpriceable tokens, up to the budget" : "off — unpriceable tokens are never bought"}
+                </span>
+              </span>
+              <span className="field-hint">
+                Off by default. With it off, a buy of anything merrymen couldn&apos;t price is
+                refused outright.
+              </span>
+            </label>
+            <Field
+              label="scout budget (USDG)"
+              hint={`Most that may sit in unpriceable positions AT ONCE, measured by what you paid. Selling out frees it again. Default ${d.scoutBudgetUsdg} — you have to name a number.`}
+            >
+              <input
+                value={v("scoutBudgetUsdg")}
+                inputMode="numeric"
+                placeholder={String(d.scoutBudgetUsdg)}
+                onChange={set("scoutBudgetUsdg")}
+              />
+            </Field>
+            <Field
+              label="max per token (USDG)"
+              hint={`Ceiling for any single unpriceable token, counting what you already put in — so topping up can't creep past a cap one buy would have hit. Default ${d.scoutPerTokenUsdg}.`}
+            >
+              <input
+                value={v("scoutPerTokenUsdg")}
+                inputMode="numeric"
+                placeholder={String(d.scoutPerTokenUsdg)}
+                onChange={set("scoutPerTokenUsdg")}
+              />
+            </Field>
+          </div>
+          <div className="grant-note err">
+            <b>The drawdown breaker cannot protect this money.</b> A quarantined position is carried
+            at cost, so it doesn&apos;t move — if one goes to zero, your equity won&apos;t show it
+            and the breaker won&apos;t fire. That isn&apos;t an oversight; it&apos;s what refusing to
+            trust an untrustworthy price actually means. <b>The budget is the risk control here</b>,
+            not the breaker. Set it to what you&apos;ve decided you can lose.
+            {scoutEnabledVal && Number(v("scoutBudgetUsdg") || d.scoutBudgetUsdg) === 0 && (
+              <>
+                <br />
+                <br />
+                Scout mode is on but the budget is <b>0</b>, so nothing will be bought. Set a budget
+                or turn it back off.
+              </>
+            )}
           </div>
 
           {/* ── TELEGRAM (essentials: token + enable) ──────────────────── */}
