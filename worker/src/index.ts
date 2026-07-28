@@ -60,7 +60,7 @@ import { loadGrantFile } from "./grant";
 import { ensureHome, homePaths } from "./home";
 import { resolveLlm } from "./llm";
 import { applyPaperIntent, type PaperPosition } from "./paper";
-import { checkPolicy, type AgentLimits, type AgentState, type TradeIntent } from "./policy";
+import { checkPolicy, type AgentLimits, type AgentState, type ScoutContext, type TradeIntent } from "./policy";
 import {
   bundlerChainMismatch,
   connectionKey,
@@ -274,6 +274,12 @@ async function main() {
   // every tick forever. Resets when the book is valuable again.
   let notedUnpriced = false;
   let lastEquityUsdg = 0n; // updated each tick; used by chat-triggered trades
+  // What the tick could NOT price this cycle (lowercased addresses), and the
+  // total cost already sitting in such positions. Written from the real price
+  // map each tick and read by the scout ceiling — deliberately NOT reachable
+  // from an intent, so a strategy can't declare its own target priceable.
+  let lastUnpriceable: Set<string> = new Set();
+  let lastQuarantinedUsdg = 0n;
   // Whether that figure is the WHOLE book. False while a held asset can't be
   // valued — the total is then a partial sum, and judging a drawdown on it would
   // read the missing asset as a loss and refuse the very sell that clears it.
@@ -576,6 +582,35 @@ async function main() {
     };
   }
 
+  /**
+   * What the scout ceiling needs to judge THIS intent — built from what the tick
+   * actually managed to price, never from anything the intent claims.
+   *
+   * `lastUnpriceable` is written by the tick each cycle from readPositions +
+   * mergePoolPrices. A strategy cannot reach it, which is the whole point: the
+   * budget on unpriceable positions must not be bypassable by the code it bounds.
+   *
+   * Returns undefined for non-swaps, so vault moves and transfers are untouched.
+   */
+  function scoutContextFor(intent: TradeIntent): ScoutContext | undefined {
+    if (intent.kind !== "swap" || !active) return undefined;
+    const symbol = symbolOfToken(intent.buyToken);
+    const buyUnpriceable = lastUnpriceable.has(intent.buyToken.toLowerCase());
+    return {
+      limits: {
+        enabled: cfg.scoutEnabled,
+        budgetUsdg: usdg(cfg.scoutBudgetUsdg),
+        perTokenUsdg: usdg(cfg.scoutPerTokenUsdg),
+      },
+      buyUnpriceable,
+      existingCostUsdg:
+        symbol !== undefined
+          ? getBasis(active.agentId, paperActive() ? "paper" : "live", symbol).costUsdg
+          : 0n,
+      quarantinedUsdg: lastQuarantinedUsdg,
+    };
+  }
+
   async function processIntent(
     intent: TradeIntent,
     equityUsdg: bigint,
@@ -595,7 +630,7 @@ async function main() {
       equityKnown,
       nowSec: Math.floor(Date.now() / 1000),
     };
-    const verdict = checkPolicy(intent, limits, state);
+    const verdict = checkPolicy(intent, limits, state, scoutContextFor(intent));
     const notional = intent.kind === "swap" ? intent.notionalUsdg : intent.amountUsdg;
 
     if (!verdict.ok) {
@@ -1088,6 +1123,18 @@ async function main() {
     // recorded cost either — then we know neither what it's worth nor what was
     // paid, and there is no honest number to put in. When the agent bought it,
     // the basis is on record and cost carries the arithmetic just fine.
+    // Publish what the scout ceiling judges against. A token is unpriceable if
+    // this tick produced no price for it — which covers both a held position we
+    // couldn't value AND a watched token we've never bought, since neither has
+    // an entry in the price map. That second case is the one that matters: it's
+    // the fresh launch the owner is deciding whether to scout into.
+    lastUnpriceable = new Set(
+      watchTokens
+        .filter((t) => !market.prices.has(t.symbol))
+        .map((t) => t.address.toLowerCase()),
+    );
+    lastQuarantinedUsdg = quarantine.totalCostUsdg;
+
     const unknownCost = quarantine.holdings.filter((h) => h.costUsdg === 0n).map((h) => h.symbol);
     const bookIncomplete = unknownCost.length > 0;
     if (unpricedByDesign.length > 0 && !notedUnpriced) {

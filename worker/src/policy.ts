@@ -9,6 +9,8 @@
  * originated from a model. Intents come in typed; verdicts go out typed.
  */
 
+import { scoutAllows, type ScoutLimits } from "./quarantine";
+
 export interface AgentLimits {
   /** USDG (6dp) ceiling for a single trade. */
   perTradeUsdg: bigint;
@@ -100,7 +102,37 @@ export interface AgentState {
   nowSec: number;
 }
 
-export function checkPolicy(intent: TradeIntent, limits: AgentLimits, state: AgentState): Verdict {
+/**
+ * Everything the scout ceiling needs, supplied BY THE CALLER, never by the intent.
+ *
+ * That separation is the point. Intents come from strategies, including
+ * user-written ones in ~/.merrymen/strategies, so a flag carried on the intent
+ * saying "this token is priceable" would be a flag a strategy could simply set —
+ * and the budget on unpriceable positions would be bypassable by the very code
+ * it exists to bound. Only the tick knows what it managed to price, so only the
+ * tick gets to say.
+ *
+ * Absent = no scout gating, matching the behaviour before scout mode existed.
+ * That is right for backtests and fixtures, which have no live price map. NEVER
+ * leave it absent on a live path: an unpriceable buy would then be limited only
+ * by the per-trade cap, which is exactly the hole this closes.
+ */
+export interface ScoutContext {
+  limits: ScoutLimits;
+  /** Did the tick fail to price the token being BOUGHT this cycle? */
+  buyUnpriceable: boolean;
+  /** USDG (6dp) already sunk into that same token. */
+  existingCostUsdg: bigint;
+  /** USDG (6dp) total across every unpriceable position held. */
+  quarantinedUsdg: bigint;
+}
+
+export function checkPolicy(
+  intent: TradeIntent,
+  limits: AgentLimits,
+  state: AgentState,
+  scout?: ScoutContext,
+): Verdict {
   if (state.nowSec >= limits.expiresAt) {
     return { ok: false, rule: "expiry", detail: "session key expired" };
   }
@@ -141,6 +173,28 @@ export function checkPolicy(intent: TradeIntent, limits: AgentLimits, state: Age
             `so the position could be opened and never closed. Re-sign the grant at /grant to cover it.`,
         };
       }
+    }
+
+    // BUYING SOMETHING NOBODY CAN PRICE.
+    //
+    // A token the tick couldn't value is one whose worth is genuinely unknown:
+    // its pool is too new or too thin for a TWAP anyone should trust. The
+    // drawdown breaker cannot protect that money, because protecting it would
+    // mean believing the price it just refused. So the scout BUDGET is the only
+    // control there is, and it has to bite here — before the position exists.
+    //
+    // Sells are untouched: this whole branch only ever inspects buyToken, so
+    // getting OUT of an unpriceable position is never blocked by it.
+    if (scout?.buyUnpriceable) {
+      const verdict = scoutAllows(
+        {
+          spendUsdg: intent.notionalUsdg,
+          existingCostUsdg: scout.existingCostUsdg,
+          quarantinedUsdg: scout.quarantinedUsdg,
+        },
+        scout.limits,
+      );
+      if (!verdict.ok) return { ok: false, rule: "scout-budget", detail: verdict.reason };
     }
   }
 

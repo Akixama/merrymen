@@ -316,3 +316,100 @@ describe("checkPolicy — the no-exit rule", () => {
     assert.equal(v.ok === false && v.detail.includes("never closed"), true);
   });
 });
+
+/**
+ * THE SCOUT CEILING — buying something nobody can price.
+ *
+ * A token the tick couldn't value has a genuinely unknown worth: its pool is too
+ * new or too thin for a TWAP anyone should trust. Carrying it at cost keeps the
+ * book honest, but it also means the drawdown breaker CANNOT see it move. The
+ * budget is therefore the only control on this money, and it has to bite before
+ * the position exists.
+ */
+describe("checkPolicy — the scout ceiling", () => {
+  const CATE = "0x5555555555555555555555555555555555555555" as const;
+  const base = limits({ allowedAssets: [USDG, AAPL, CATE], sellableAssets: [USDG, AAPL, CATE] });
+  const scout = (over: Partial<import("./policy").ScoutContext> = {}) => ({
+    limits: { enabled: true, budgetUsdg: 100_000_000n, perTokenUsdg: 25_000_000n },
+    buyUnpriceable: true,
+    existingCostUsdg: 0n,
+    quarantinedUsdg: 0n,
+    ...over,
+  });
+
+  it("allows an unpriceable buy inside the budget", () => {
+    const v = checkPolicy(swap({ buyToken: CATE, notionalUsdg: 10_000_000n }), base, state(), scout());
+    assert.equal(v.ok, true);
+  });
+
+  it("REFUSES an unpriceable buy when scout mode is off", () => {
+    const v = checkPolicy(
+      swap({ buyToken: CATE }),
+      base,
+      state(),
+      scout({ limits: { enabled: false, budgetUsdg: 100_000_000n, perTokenUsdg: 25_000_000n } }),
+    );
+    assert.equal(v.ok === false && v.rule, "scout-budget");
+  });
+
+  it("REFUSES past the per-token ceiling, counting what's already sunk in", () => {
+    const v = checkPolicy(
+      swap({ buyToken: CATE, notionalUsdg: 10_000_000n }),
+      base,
+      state(),
+      scout({ existingCostUsdg: 20_000_000n }),
+    );
+    assert.equal(v.ok === false && v.rule, "scout-budget");
+  });
+
+  it("REFUSES past the total budget", () => {
+    const v = checkPolicy(
+      swap({ buyToken: CATE, notionalUsdg: 10_000_000n }),
+      base,
+      state(),
+      scout({ quarantinedUsdg: 95_000_000n }),
+    );
+    assert.equal(v.ok === false && v.rule, "scout-budget");
+  });
+
+  it("does NOT gate a buy of something the tick priced fine", () => {
+    const v = checkPolicy(
+      swap({ buyToken: CATE }),
+      base,
+      state(),
+      scout({ buyUnpriceable: false, limits: { enabled: false, budgetUsdg: 0n, perTokenUsdg: 0n } }),
+    );
+    assert.equal(v.ok, true, "a priceable token is not scout business");
+  });
+
+  it("NEVER blocks the SELL of an unpriceable position — the exit stays open", () => {
+    // Holding CATE, can't price it, scout mode off and budget exhausted. Getting
+    // out must still be allowed: the rule only ever inspects buyToken.
+    const v = checkPolicy(
+      swap({ sellToken: CATE, buyToken: USDG }),
+      base,
+      state(),
+      scout({
+        buyUnpriceable: false,
+        quarantinedUsdg: 100_000_000n,
+        limits: { enabled: false, budgetUsdg: 0n, perTokenUsdg: 0n },
+      }),
+    );
+    assert.equal(v.ok, true);
+  });
+
+  it("leaves vault moves and transfers alone", () => {
+    const dep: TradeIntent = { kind: "vault-deposit", target: VAULT, amountUsdg: 25_000_000n };
+    assert.equal(checkPolicy(dep, base, state(), scout()).ok, true);
+  });
+
+  it("runs AFTER the no-exit rule — an unsellable token fails on that first", () => {
+    const noSell = limits({ allowedAssets: [USDG, AAPL, CATE], sellableAssets: [USDG, AAPL] });
+    const v = checkPolicy(swap({ buyToken: CATE }), noSell, state(), scout());
+    assert.equal(v.ok === false && v.rule, "no-exit", "the more fundamental refusal wins");
+  });
+
+  it("is inert when no context is passed — backtests and fixtures are unaffected", () => {
+    assert.equal(checkPolicy(swap({ buyToken: CATE }), base, state()).ok, true);
+  });
+});
