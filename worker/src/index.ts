@@ -43,6 +43,7 @@ import {
   effectivePerfFeeBps,
   pimlicoBundlerUrl,
   robinhoodTestnet,
+  grantHasV4,
   sellableAssets,
   tokenCoverage,
   uncoveredBasketSymbols,
@@ -52,7 +53,7 @@ import {
   type StoredGrant,
 } from "../../packages/core/src/index";
 import { fetchRialtoQuote, resolveRialtoRouter } from "./venues/rialto";
-import { bestRoute, buildSwapCall, minOutWithSlippage } from "./venues/uniswap";
+import { bestRoute, buildTradeCalls, minOutWithSlippage } from "./venues/uniswap";
 import { createAgentExecutor, type AgentExecutor } from "./executor";
 import { readHolderStatus } from "./circle";
 import { accrueAboveHwm } from "./fees";
@@ -131,6 +132,13 @@ function limitsFromGrant(grant: StoredGrant, watchTokens: readonly StockToken[])
       UNISWAP.swapRouter02 as `0x${string}`,
       MORPHO.steakhouseUsdgVault as `0x${string}`,
       CASH.USDG as `0x${string}`,
+      // v4's two contacts. Listed only when the signature actually carries the
+      // v4 permissions — this layer MIRRORS the on-chain policy, and claiming a
+      // target the key can't reach would make the mirror lie in the permissive
+      // direction, which is the one that costs gas on a doomed UserOp.
+      ...(grantHasV4(grant)
+        ? [UNISWAP.permit2 as `0x${string}`, UNISWAP.universalRouter as `0x${string}`]
+        : []),
     ],
     allowedAssets: [CASH.USDG as `0x${string}`, ...watchTokens.map((t) => t.address)],
     // What this SIGNATURE can sell, which is not the same as what the owner
@@ -759,6 +767,10 @@ async function main() {
           // direct-only quoting left them permanently untradable. The router
           // holds the intermediate leg, so this needs no extra approval.
           via: CASH.WETH as `0x${string}`,
+          // Only consider v4 if THIS signature can actually reach it. Quoting a
+          // venue the key can't touch would pick a route that reverts at the
+          // wall — worse than never having considered it.
+          v4: grantHasV4(active.grant),
         });
         if (!quote) {
           console.log(`[quote] no executable Uniswap route for ${intent.buyToken} — skipped`);
@@ -813,31 +825,26 @@ async function main() {
             await addEvent(agentId, "warn", `swap has no USDG leg — cost basis not booked for this fill`);
           }
         }
-        // Approve exactly what's sold — USDG on buys, the stock token on sells.
-        const approve = {
-          to: intent.sellToken,
-          value: 0n,
-          data: encodeFunctionData({
-            abi: erc20Abi,
-            functionName: "approve",
-            args: [UNISWAP.swapRouter02 as `0x${string}`, intent.sellAmountRaw],
-          }),
-        };
-        const swap = buildSwapCall({
+        // One builder, driven by the quote — so the route that was PRICED is
+        // necessarily the route that RUNS. v3 approves the router directly; v4
+        // approves Permit2, which grants the router a bounded expiring
+        // allowance. Building these by hand at the call site is how you approve
+        // one router and swap through another.
+        const calls = buildTradeCalls({
+          quote,
           tokenIn: intent.sellToken,
           tokenOut: intent.buyToken,
-          fee: quote.fee,
           recipient: executor.address,
           amountIn: intent.sellAmountRaw,
           minAmountOut: minOut,
-          // Execute the SAME route the quote priced — minOut was derived from it.
-          path: quote.path,
+          deadline: Math.floor(Date.now() / 1000) + 300,
         });
-        txHash = await executor.execute([approve, swap]);
+        txHash = await executor.execute(calls);
+        const venue = quote.v4 ? "v4" : quote.path ? "v3 via WETH" : "v3 direct";
         await addEvent(
           agentId,
           "ok",
-          `simulated ✓ quote ${quote.amountOut} min ${minOut} @ fee ${quote.fee / 10_000}% · gas ~${quote.gasEstimate}`,
+          `simulated ✓ ${venue} quote ${quote.amountOut} min ${minOut} @ fee ${quote.fee / 10_000}% · gas ~${quote.gasEstimate}`,
         );
       } else if (intent.kind === "swap" && cfg.rialtoApiKey && intent.sellToken !== intent.buyToken) {
         // Rialto full leg: registry-resolved router only, API-supplied calldata

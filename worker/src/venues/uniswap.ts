@@ -13,8 +13,9 @@
  * by the impact guard upstream.
  */
 
-import { encodeFunctionData, parseAbi, type Hex, type PublicClient } from "viem";
+import { encodeFunctionData, erc20Abi, parseAbi, type Hex, type PublicClient } from "viem";
 import { UNISWAP, UNISWAP_SWAP_ROUTER_ABI } from "../../../packages/core/src/index";
+import { buildV4SwapCalls, findV4Pool, quoteV4, type PoolKey } from "./uniswap-v4";
 
 /** Fee tiers to scan, most-likely-liquid first. */
 export const FEE_TIERS = [500, 3000, 10000] as const;
@@ -34,6 +35,14 @@ export interface Quote {
    * single-hop swap, which is what most of this file's callers still produce.
    */
   path?: { tokens: readonly `0x${string}`[]; fees: readonly number[] };
+  /**
+   * Present when this quote came from Uniswap **v4**, carrying the exact pool it
+   * priced. v4 executes through Permit2 + UniversalRouter, so a quote and its
+   * calldata are not interchangeable with v3's — buildTradeCalls dispatches on
+   * this, and losing it would mean executing a different route than the one
+   * minOut was computed against.
+   */
+  v4?: { key: PoolKey };
 }
 
 /**
@@ -161,10 +170,37 @@ export async function bestRoute(
     amountIn: bigint;
     /** Intermediate token to try routing through. Omit to stay single-hop. */
     via?: `0x${string}`;
+    /**
+     * Also quote Uniswap v4. Gated by the CALLER on whether the signed grant
+     * carries the v4 permissions — quoting a venue the key can't reach would
+     * pick a route that then reverts at the wall, which is worse than never
+     * having considered it.
+     */
+    v4?: boolean;
   },
 ): Promise<Quote | null> {
   const lc = (a: string) => a.toLowerCase();
   const direct = FEE_TIERS.map((fee) => quoteTier(client, { ...args, fee }));
+
+  // v4 is one more candidate in the same comparison, not a preference. Best
+  // amountOut wins outright, so adding it can only improve the fill — and on
+  // this chain it sometimes does (AAPL quotes better on v4 than v3).
+  const v4 = args.v4
+    ? [
+        (async (): Promise<Quote | null> => {
+          const pool = await findV4Pool(client, args.tokenIn, args.tokenOut);
+          if (!pool) return null;
+          const q = await quoteV4(client, { key: pool.key, tokenIn: args.tokenIn, amountIn: args.amountIn });
+          if (!q) return null;
+          return {
+            fee: pool.key.fee,
+            amountOut: q.amountOut,
+            gasEstimate: q.gasEstimate,
+            v4: { key: pool.key },
+          };
+        })(),
+      ]
+    : [];
 
   // Hopping through one of the endpoints is the same swap with extra steps.
   const viaUsable =
@@ -181,7 +217,60 @@ export async function bestRoute(
       )
     : [];
 
-  return pickBestQuote(await Promise.all([...direct, ...hops]));
+  return pickBestQuote(await Promise.all([...direct, ...hops, ...v4]));
+}
+
+/**
+ * Every call needed to execute a quote, in order — the ONE place a route turns
+ * into calldata.
+ *
+ * v3 and v4 need different approvals and a different router, and the quote is
+ * what says which. Building these separately at the call site is how you end up
+ * approving one router and swapping through another, or executing a v3 path
+ * against a minOut computed on a v4 pool. Threading the quote through means the
+ * route that was priced is necessarily the route that runs.
+ */
+export function buildTradeCalls(args: {
+  quote: Quote;
+  tokenIn: `0x${string}`;
+  tokenOut: `0x${string}`;
+  recipient: `0x${string}`;
+  amountIn: bigint;
+  minAmountOut: bigint;
+  /** Unix seconds. v4 only — bounds the Permit2 allowance and the router call. */
+  deadline: number;
+}): SwapCall[] {
+  if (args.quote.v4) {
+    return buildV4SwapCalls({
+      key: args.quote.v4.key,
+      tokenIn: args.tokenIn,
+      amountIn: args.amountIn,
+      minAmountOut: args.minAmountOut,
+      deadline: args.deadline,
+    });
+  }
+  // v3: approve the router directly for exactly this trade, then swap.
+  const approve: SwapCall = {
+    to: args.tokenIn,
+    value: 0n,
+    data: encodeFunctionData({
+      abi: erc20Abi,
+      functionName: "approve",
+      args: [UNISWAP.swapRouter02 as `0x${string}`, args.amountIn],
+    }),
+  };
+  return [
+    approve,
+    buildSwapCall({
+      tokenIn: args.tokenIn,
+      tokenOut: args.tokenOut,
+      fee: args.quote.fee,
+      recipient: args.recipient,
+      amountIn: args.amountIn,
+      minAmountOut: args.minAmountOut,
+      path: args.quote.path,
+    }),
+  ];
 }
 
 export interface SwapCall {
