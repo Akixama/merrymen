@@ -129,6 +129,15 @@ export interface MerrymenSettings {
    */
   bitqueryApiKey?: string;
   /**
+   * Discovery: poll Bitquery for newly launched pairs and TELL the owner.
+   * Defaults ON, because it only runs when a Bitquery key or a holder token is
+   * configured — supplying one is the opt-in. It can never trade: a surfaced
+   * pair still needs adding in /settings and a re-signed grant.
+   */
+  discoveryEnabled?: boolean;
+  /** Minutes between discovery polls. The gateway allows only a few a minute. */
+  discoveryIntervalMin?: number;
+  /**
    * SCOUT MODE — buying tokens too new or too thin to price.
    *
    * A freshly launched pool has no TWAP history and almost no depth, which is
@@ -261,6 +270,8 @@ export const SETTINGS_DEFAULTS = {
   // Scout mode is OFF and ZERO by default. Buying what you cannot price is a
   // real decision with a real downside, so it is never the default and never
   // inherits the main budget — the owner has to name a number themselves.
+  discoveryEnabled: true,
+  discoveryIntervalMin: 10,
   scoutEnabled: false,
   scoutBudgetUsdg: 0,
   scoutPerTokenUsdg: 25,

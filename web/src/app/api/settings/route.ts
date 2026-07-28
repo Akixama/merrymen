@@ -157,6 +157,7 @@ const NUM_FIELDS: Record<string, [number, number]> = {
   maxPriceDivergenceBps: [10, 10_000],
   // Scout ceilings. 0 is a meaningful floor — it's the off switch for the
   // budget independently of the enable flag, so both have to allow it.
+  discoveryIntervalMin: [1, 1440],
   scoutBudgetUsdg: [0, 1_000_000],
   scoutPerTokenUsdg: [0, 1_000_000],
 };
@@ -171,6 +172,7 @@ const BOOL_FIELDS = [
   "telegramAgentAutoShell",
   "virtualsEnabled",
   "scoutEnabled",
+  "discoveryEnabled",
 ] as const;
 /** Telegram PC string-array allowlists: (field, per-entry maxLen). */
 const STR_ARRAY_FIELDS: Record<string, number> = {

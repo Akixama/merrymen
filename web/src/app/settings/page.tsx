@@ -47,6 +47,7 @@ export default function SettingsPage() {
   const [virtualsEnabled, setVirtualsEnabled] = useState<boolean | null>(null);
   // Scout mode is a boolean, so it can't ride the string `draft`.
   const [scoutEnabled, setScoutEnabled] = useState<boolean | null>(null);
+  const [discoveryEnabled, setDiscoveryEnabled] = useState<boolean | null>(null);
   const [allowlist, setAllowlist] = useState<number[] | null>(null);
   const [tgTest, setTgTest] = useState<string | null>(null);
   // PC control: master + capability set + string allowlists (also can't ride `draft`).
@@ -151,6 +152,7 @@ export default function SettingsPage() {
     if (tgNotify !== null) body.telegramNotifyEnabled = tgNotify;
     if (virtualsEnabled !== null) body.virtualsEnabled = virtualsEnabled;
     if (scoutEnabled !== null) body.scoutEnabled = scoutEnabled;
+    if (discoveryEnabled !== null) body.discoveryEnabled = discoveryEnabled;
     if (allowlist !== null) body.telegramAllowlist = allowlist;
     if (pcEnabled !== null) body.telegramPcControlEnabled = pcEnabled;
     if (caps !== null) body.telegramCapabilities = caps;
@@ -180,6 +182,7 @@ export default function SettingsPage() {
       setTgNotify(null);
       setVirtualsEnabled(null);
       setScoutEnabled(null);
+      setDiscoveryEnabled(null);
       setAllowlist(null);
       setPcEnabled(null);
       setCaps(null);
@@ -234,6 +237,7 @@ export default function SettingsPage() {
   const tgNotifyVal = tgNotify ?? view.values.telegramNotifyEnabled ?? d.telegramNotifyEnabled;
   const virtualsEnabledVal = virtualsEnabled ?? view.values.virtualsEnabled ?? d.virtualsEnabled;
   const scoutEnabledVal = scoutEnabled ?? view.values.scoutEnabled ?? d.scoutEnabled;
+  const discoveryEnabledVal = discoveryEnabled ?? view.values.discoveryEnabled ?? d.discoveryEnabled;
   const allowlistVal = allowlist ?? view.values.telegramAllowlist ?? [];
   const pcEnabledVal = pcEnabled ?? view.values.telegramPcControlEnabled ?? d.telegramPcControlEnabled;
   const agentEnabledVal = agentEnabled ?? view.values.telegramAgentEnabled ?? d.telegramAgentEnabled;
@@ -506,6 +510,50 @@ export default function SettingsPage() {
             <b>Adding a token here doesn&apos;t let your merryman trade it yet.</b> The tradable list
             lives inside your signed key, so save this, then{" "}
             <Link href="/grant">re-sign at /grant</Link> — free, instant, same wallet and same funds.
+          </div>
+
+          {/* ── DISCOVERY ──────────────────────────────────────────────────
+              Read-only and message-only. Worth surfacing next to the token
+              editor because the action it prompts is "add a token here". */}
+          <div className="settings-subtle mono">discovery · new pairs as they launch</div>
+          <div className="grant-fields settings-grid">
+            <label className="field settings-field">
+              <span className="field-label">watch for new pairs</span>
+              <span className="field-input">
+                <input
+                  type="checkbox"
+                  checked={discoveryEnabledVal}
+                  onChange={(e) => setDiscoveryEnabled(e.target.checked)}
+                  style={{ width: "auto" }}
+                />
+                <span className="field-unit">
+                  {discoveryEnabledVal ? "tells you when something launches" : "off"}
+                </span>
+              </span>
+              <span className="field-hint">
+                Needs a Bitquery key above (or the Merry Circle brain, whose token works for both).
+                Without one this does nothing and says nothing.
+              </span>
+            </label>
+            <Field
+              label="check every (minutes)"
+              hint={`How often to look. Default ${d.discoveryIntervalMin}. The shared holder gateway allows only a few calls a minute per wallet, and your merryman's brain draws on the same allowance.`}
+            >
+              <input
+                value={v("discoveryIntervalMin")}
+                inputMode="numeric"
+                placeholder={String(d.discoveryIntervalMin)}
+                onChange={set("discoveryIntervalMin")}
+              />
+            </Field>
+          </div>
+          <div className="grant-note">
+            Bitquery indexes Robinhood Chain from genesis, including <b>Uniswap v4</b> — where new
+            pairs actually launch, and which your merryman can&apos;t see by scanning. It reports
+            what it finds, with the depth and whether it could price it.
+            <br />
+            <b>It never buys anything.</b> A pair it surfaces still needs you to add it above and
+            re-sign at <Link href="/grant">/grant</Link>, exactly as if you&apos;d found it yourself.
           </div>
 
           {/* ── SCOUT MODE ─────────────────────────────────────────────────

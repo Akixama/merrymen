@@ -50,6 +50,9 @@ export interface ResolvedConfig {
   minPoolLiquidityUsdg: number;
   /** Spot-vs-TWAP band, bps, above which a price is refused. */
   maxPriceDivergenceBps: number;
+  /** Poll Bitquery for new pairs and report them. Never trades. */
+  discoveryEnabled: boolean;
+  discoveryIntervalMin: number;
   /** Scout mode: may the agent buy tokens it cannot price? Off by default. */
   scoutEnabled: boolean;
   /** Max USDG of COST that may sit in unpriceable positions at once. */
@@ -233,6 +236,8 @@ export function mergeSettings(
     customTokens,
     minPoolLiquidityUsdg: num(file.minPoolLiquidityUsdg, env.MERRYMEN_MIN_POOL_LIQUIDITY_USDG, d.minPoolLiquidityUsdg, 0, 100_000_000),
     maxPriceDivergenceBps: num(file.maxPriceDivergenceBps, env.MERRYMEN_MAX_PRICE_DIVERGENCE_BPS, d.maxPriceDivergenceBps, 10, 10_000),
+    discoveryEnabled: bool(file.discoveryEnabled, env.MERRYMEN_DISCOVERY_ENABLED, d.discoveryEnabled),
+    discoveryIntervalMin: num(file.discoveryIntervalMin, env.MERRYMEN_DISCOVERY_INTERVAL_MIN, d.discoveryIntervalMin, 1, 1440),
     scoutEnabled: bool(file.scoutEnabled, env.MERRYMEN_SCOUT_ENABLED, d.scoutEnabled),
     scoutBudgetUsdg: num(file.scoutBudgetUsdg, env.MERRYMEN_SCOUT_BUDGET_USDG, d.scoutBudgetUsdg, 0, 1_000_000),
     scoutPerTokenUsdg: num(file.scoutPerTokenUsdg, env.MERRYMEN_SCOUT_PER_TOKEN_USDG, d.scoutPerTokenUsdg, 0, 1_000_000),

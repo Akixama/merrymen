@@ -145,6 +145,14 @@ function getDb(): DatabaseSync {
       updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
       PRIMARY KEY (agent_id, mode, symbol)
     );
+    -- Pairs discovery has already told the owner about. Persisted so a restart
+    -- doesn't re-announce every launch of the last hour as if it were new —
+    -- a feed that cries wolf on every reboot stops being read.
+    CREATE TABLE IF NOT EXISTS discovered_pools (
+      address TEXT PRIMARY KEY,
+      symbol TEXT NOT NULL,
+      first_seen INTEGER NOT NULL DEFAULT (unixepoch())
+    );
   `);
   for (const ddl of [
     "ALTER TABLE equity ADD COLUMN positions_usdg REAL NOT NULL DEFAULT 0",
@@ -698,4 +706,30 @@ export async function setPaperBook(agentId: string, book: PaperBookRow): Promise
        WHERE agent_id = ?`,
     )
     .run(book.cashUsdg, book.vaultUsdg, book.hwmUsdg, JSON.stringify(book.shares), agentId);
+}
+
+/** Addresses discovery has already reported. Bounded — old rows are pruned. */
+export function seenPools(): Set<string> {
+  try {
+    const rows = getDb().prepare("SELECT address FROM discovered_pools").all() as { address: string }[];
+    return new Set(rows.map((r) => r.address.toLowerCase()));
+  } catch {
+    return new Set();
+  }
+}
+
+/** Record a reported pair so it is never announced twice. */
+export function markPoolSeen(address: string, symbol: string): void {
+  try {
+    getDb()
+      .prepare("INSERT OR IGNORE INTO discovered_pools (address, symbol) VALUES (?, ?)")
+      .run(address.toLowerCase(), symbol.slice(0, 16));
+    // A launchy chain could otherwise grow this forever. 5k rows is far more
+    // than dedupe needs and keeps the table trivial to scan.
+    getDb().exec(
+      "DELETE FROM discovered_pools WHERE address NOT IN (SELECT address FROM discovered_pools ORDER BY first_seen DESC LIMIT 5000)",
+    );
+  } catch (e) {
+    console.error("[store] discovered_pools insert failed:", e);
+  }
 }

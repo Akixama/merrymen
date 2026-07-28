@@ -81,6 +81,7 @@ import { readPositionRaw } from "./telegram/reads";
 import { ensureSoul, getName } from "./soul";
 import { readPositions, type Position } from "./positions";
 import { quarantineOf } from "./quarantine";
+import { describeDiscovery, discoverPools, resolveBitquery } from "./discovery";
 import { mainnetClient, readAccountBalances, readMarketSafety, setMainnetRpc } from "./snapshot";
 import { applyFill } from "./basis";
 import {
@@ -105,6 +106,8 @@ import {
   setAgentName,
   setAgentHwm,
   setAgentStatus,
+  markPoolSeen,
+  seenPools,
   setPositions,
   type TradeRow,
 } from "./store";
@@ -379,6 +382,59 @@ async function main() {
    * Emitted when the set CHANGES (token added, or grant re-signed to cover it),
    * not every tick: the fact is static until one side moves.
    */
+  /**
+   * Discovery — a slow, separate poll that only ever produces a MESSAGE.
+   *
+   * Deliberately not on the trading tick. The holder gateway allows a handful of
+   * calls a minute across everything a wallet does, so polling at tick cadence
+   * would spend the allowance the owner's brain also draws on — trading one
+   * feature for another they're more likely to be relying on.
+   *
+   * Nothing here can trade. A surfaced pair still costs the owner the same two
+   * deliberate steps as one they found themselves: add it in /settings, re-sign
+   * at /grant. That is the point, not a limitation.
+   */
+  let lastDiscoveryAt = 0;
+  async function runDiscovery(agentId: string): Promise<void> {
+    if (!cfg.discoveryEnabled) return;
+    const creds = resolveBitquery({
+      bitqueryApiKey: cfg.bitqueryApiKey,
+      // The holder token doubles as the gateway credential — the same one the
+      // brain claims. No Bitquery account needed for Circle members.
+      merrymenToken: cfg.llmProvider === "merrymen" ? cfg.llmApiKey : undefined,
+    });
+    if (!creds) return; // no key, no discovery — honest silence, not an error
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (nowSec - lastDiscoveryAt < cfg.discoveryIntervalMin * 60) return;
+    lastDiscoveryAt = nowSec;
+
+    const found = await discoverPools({
+      client: mainnetClient(),
+      creds,
+      guard: {
+        minLiquidityUsdg: usdg(cfg.minPoolLiquidityUsdg),
+        maxDivergenceBps: cfg.maxPriceDivergenceBps,
+      },
+      seen: seenPools(),
+      known: watchTokens,
+      sinceMinutes: Math.max(60, cfg.discoveryIntervalMin * 2),
+    });
+
+    for (const d of found) {
+      // Persist BEFORE announcing. If the notification fails we'd rather stay
+      // quiet than repeat ourselves every poll — a feed that duplicates stops
+      // being read, and the owner can always look the token up.
+      markPoolSeen(d.token, d.symbol);
+      const line = describeDiscovery(d);
+      console.log(`[discovery] ${line}`);
+      await addEvent(
+        agentId,
+        "ok",
+        `${line} — I can't trade it until you add it in /settings and re-sign at /grant.`,
+      );
+    }
+  }
+
   let lastCoverageKey: string | null = null;
   async function noteTokenCoverage(agentId: string): Promise<void> {
     const grant = active?.grant ?? null;
@@ -1340,6 +1396,12 @@ async function main() {
     lastGasWei = balances.ethWei;
     // Fresh feed prices → the notifier's price alerts (evaluated off-tick).
     notifierHandle?.publishPrices(market.prices);
+
+    // Discovery rides the tick as a trigger but keeps its OWN interval, so its
+    // cadence is independent of how fast the owner trades. Never awaited into
+    // the trading path in a way that could stall it — a data provider having a
+    // bad minute must not delay a sell.
+    void runDiscovery(agentId).catch(() => {});
 
     // Pause marker (toggled from Telegram/dashboard): keep reading state, but
     // the strategy stops proposing trades until resumed.
