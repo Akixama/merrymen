@@ -49,6 +49,47 @@ export const UNISWAP_SWAP_ROUTER_ABI = [
   },
 ] as const;
 
+/**
+ * Permit2 — how Uniswap v4 takes tokens. The account approves Permit2 once, and
+ * Permit2 grants a spender a bounded, EXPIRING allowance. `amount` is uint160 and
+ * `expiration` uint48, both narrower than the usual uint256: silently truncating
+ * either would grant an allowance nobody intended.
+ */
+export const PERMIT2_ABI = [
+  {
+    type: "function",
+    name: "approve",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "token", type: "address" },
+      { name: "spender", type: "address" },
+      { name: "amount", type: "uint160" },
+      { name: "expiration", type: "uint48" },
+    ],
+    outputs: [],
+  },
+] as const;
+
+/**
+ * UniversalRouter — a command interpreter, not a swap function. `commands` is a
+ * byte per operation and `inputs` the matching encoded arguments, so a call
+ * policy can constrain WHICH contract runs but not what it's asked to do. The
+ * real bound is upstream: it can only move what Permit2 allowed it.
+ */
+export const UNIVERSAL_ROUTER_ABI = [
+  {
+    type: "function",
+    name: "execute",
+    stateMutability: "payable",
+    inputs: [
+      { name: "commands", type: "bytes" },
+      { name: "inputs", type: "bytes[]" },
+      { name: "deadline", type: "uint256" },
+    ],
+    outputs: [],
+  },
+] as const;
+
 /** Chainlink AggregatorV3Interface — stock feeds run 24/5; check updatedAt for staleness. */
 export const CHAINLINK_ABI = [
   {

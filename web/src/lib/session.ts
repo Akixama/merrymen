@@ -51,10 +51,13 @@ import {
   TRADEABLE_SYMBOLS,
   UNISWAP,
   UNISWAP_SWAP_ROUTER_ABI,
+  PERMIT2_ABI,
+  UNIVERSAL_ROUTER_ABI,
   builtinGrantTargets,
   chainForId,
   isValidCustomToken,
   robinhoodTestnet,
+  GRANT_V4,
   TRADEABLE_V2,
   USDG_DECIMALS,
   type CustomToken,
@@ -144,6 +147,10 @@ async function mintGrant(
     RIALTO.routerSnapshot as Address,
     UNISWAP.swapRouter02 as Address,
     MORPHO.steakhouseUsdgVault as Address,
+    // v4 never pulls tokens directly: the account approves PERMIT2, and Permit2
+    // grants the router a bounded expiring allowance. So Permit2 is what the
+    // token approves, and the router itself is approved for nothing.
+    UNISWAP.permit2 as Address,
   ];
 
   // Validate here too, at the last point before an address is sealed into an
@@ -252,6 +259,35 @@ async function mintGrant(
           abi: VAULT_ABI,
           functionName: "withdraw",
         },
+        // ── Uniswap v4 ────────────────────────────────────────────────────
+        // v4 routes through Permit2 rather than approving the router directly,
+        // so it needs two permissions v3 never did. Both are narrow:
+        {
+          // Permit2 may be told to grant an allowance — but ONLY to the
+          // UniversalRouter. Without that constraint this permission would let
+          // the session key hand any spender an allowance on any token, which
+          // is a strictly larger power than trading.
+          target: UNISWAP.permit2 as Address,
+          valueLimit: 0n,
+          abi: PERMIT2_ABI,
+          functionName: "approve",
+          args: [
+            null,
+            { condition: ParamCondition.EQUAL, value: UNISWAP.universalRouter as Address },
+            null,
+            null,
+          ],
+        },
+        {
+          // The UniversalRouter executes command bundles. Its calldata is
+          // opaque to a call policy, so what actually bounds this is upstream:
+          // the router can only ever move what Permit2 allowed it, and Permit2
+          // is only ever granted the size of one trade, expiring.
+          target: UNISWAP.universalRouter as Address,
+          valueLimit: 0n,
+          abi: UNIVERSAL_ROUTER_ABI,
+          functionName: "execute",
+        },
       ],
     }),
   ];
@@ -288,7 +324,7 @@ async function mintGrant(
     // it the worker assumes the legacy three — because a grant signed before the
     // list grew genuinely only has those three in its call policy, and crediting
     // it with more is how a position gets bought and never sold.
-    grantFeatures: ["transfer", TRADEABLE_V2],
+    grantFeatures: ["transfer", TRADEABLE_V2, GRANT_V4],
     // What this signature ACTUALLY covers — the worker compares it against the
     // owner's configured tokens and says so when they've drifted apart.
     grantTokens: dedupedExtras.map((t) => t.address.toLowerCase()),
