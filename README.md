@@ -374,6 +374,26 @@ Most memecoins here have no direct USDG pool, so swaps route through WETH
 automatically (`USDG → WETH → TOKEN`). The router holds the middle leg, so this
 needs no extra approval and no extra re-sign.
 
+### Keep it running
+
+```bash
+merrymen service install
+```
+
+Starts your merryman when you log in, and brings it back after a reboot. On
+Windows it uses Task Scheduler where it can and the Startup folder where that
+would need admin — a trading agent shouldn't be asking for elevation. macOS gets
+a launchd agent, Linux a `systemd --user` unit with lingering enabled. All
+user-scoped, all removed completely by `merrymen service uninstall`, and
+`merrymen doctor` tells you whether it's installed *and* whether it's actually
+running — those are different questions.
+
+**What it does not do: run while the computer is off.** Nothing does except a
+machine that stays on. If you want that, it's your own always-on box — we're not
+going to hold your keys to do it for you.
+
+The desktop app has the same thing as a tray toggle.
+
 ### Never a position you can't exit
 
 Buying spends USDG, and every grant can approve USDG generically. **Selling needs

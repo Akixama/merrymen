@@ -233,6 +233,20 @@ function trayMenu() {
       : { label: "⏸  Pause agent (no trades)", click: () => { setPaused(true); refreshTray(); } },
     { label: "↻  Restart agent", click: restartWorker },
     { type: "separator" },
+    {
+      // Auto-start, via Electron's own login-item API rather than the CLI's
+      // service verbs. Same intent, different owner: the desktop app launches
+      // itself (window + tray + worker), so scheduling `merrymen start` too
+      // would leave two workers fighting over one database.
+      label: "Start merrymen when I log in",
+      type: "checkbox",
+      checked: app.getLoginItemSettings().openAtLogin,
+      click: (item) => {
+        app.setLoginItemSettings({ openAtLogin: item.checked, openAsHidden: true });
+        refreshTray();
+      },
+    },
+    { type: "separator" },
     { label: "Quit merrymen", click: () => { quitting = true; app.quit(); } },
   ]);
 }

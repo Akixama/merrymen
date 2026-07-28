@@ -370,10 +370,18 @@ merrymen kill       # kill switch — destroys the grant`}
           Heard, and yes. Today the easiest path is the <a className="link" href="#install">one-line
           installer</a> — it checks Node, installs merrymen, and <code className="inline">merrymen
           start</code> opens the dashboard in your browser; you never need to write code (strategies
-          are optional, presets cover the rest). A <strong>1-click desktop app</strong> (.exe/.dmg
-          — no terminal at all) is on the roadmap; self-hosting is non-negotiable — your keys stay
-          on your machine — so the app will be exactly this stack in a wrapper, not a hosted
-          service. Follow progress on <a className="link" href={GITHUB} target="_blank" rel="noreferrer">GitHub</a>.
+          are optional, presets cover the rest). The <strong>1-click desktop app</strong> (.exe/.dmg
+          — no terminal at all) also ships now, on the{" "}
+          <a className="link" href={`${GITHUB}/releases`} target="_blank" rel="noreferrer">releases page</a>.
+          Either way it&apos;s the same stack on your machine, never a hosted service — your keys
+          stay with you.
+          <br />
+          <br />
+          To keep it running across logouts and reboots, <code className="inline">merrymen service
+          install</code> (or the tray toggle in the desktop app). Said plainly:{" "}
+          <strong>that survives logout, sleep and reboot — it can&apos;t run while the computer is
+          off.</strong> Nothing does except a machine that stays on, and the honest version of that
+          is your own always-on box, not us holding your keys.
         </p>
 
         <div className="callout" style={{ marginTop: 40 }}>

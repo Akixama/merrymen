@@ -30,6 +30,8 @@ import { fileURLToPath } from "node:url";
 import { banner, c, spinner, type as typeOut, withSpinner } from "./ui.mjs";
 
 // Where the PACKAGE lives (npm global dir or a checkout) — code, never data.
+import { installService, serviceLogTail, serviceStatus, uninstallService } from "./service.mjs";
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // Where the USER's data lives — settings, grant, ledger, strategies.
 const HOME = process.env.MERRYMEN_HOME ?? path.join(os.homedir(), ".merrymen");
@@ -722,6 +724,18 @@ async function doctor() {
   } else {
     console.log(`  ${dim("telegram: not configured (optional — set it up in the dashboard)")}`);
   }
+
+  // auto-start. Installed and running are different facts, and reporting only
+  // the first is how an owner believes their agent survived a reboot when it
+  // didn't. Purely informational — doctor never changes anything.
+  const svc = serviceStatus();
+  if (!svc.installed) {
+    console.log(`  ${dim("auto-start: not installed — `merrymen service install` to start on login")}`);
+  } else if (svc.running) {
+    ok(`auto-start: installed and running (${svc.where})`);
+  } else {
+    warn(`auto-start: installed but not running right now — starts at your next login`);
+  }
   console.log();
 }
 
@@ -1195,6 +1209,58 @@ async function update() {
   }
 }
 
+/**
+ * merrymen service install|uninstall|status — survive a logout and a reboot.
+ *
+ * The honest framing is repeated in the output rather than buried in docs: this
+ * keeps the agent alive across logout, sleep and reboot. It cannot make it run
+ * while the machine is OFF. The only real answer to that is a computer that
+ * stays on — the owner's own always-on box, not us holding their keys.
+ */
+async function serviceCmd(sub) {
+  await banner("service — keep the band riding");
+  if (sub === "install") {
+    const r = installService();
+    if (!r.ok) {
+      console.log(`  ${c.red("x")} couldn't install: ${r.detail}`);
+      console.log(dim("    nothing was changed on your machine."));
+      return;
+    }
+    console.log(`  ${c.green("+")} installed — ${r.detail}`);
+    console.log(`
+  Your merryman now starts when you log in, and comes back after a reboot.
+
+  ${bold("What this does NOT do:")} it can't run while the computer is off.
+  Nothing survives that except a machine that stays on — your own always-on
+  box if you want one. We're not going to hold your keys to do it for you.
+
+  ${dim("undo any time:")} merrymen service uninstall`);
+    return;
+  }
+  if (sub === "uninstall") {
+    const r = uninstallService();
+    console.log(r.ok ? `  ${c.green("+")} ${r.detail}` : `  ${c.gold("-")} ${r.detail}`);
+    console.log(dim("    keys, settings and history untouched — only the auto-start was removed."));
+    return;
+  }
+  const st = serviceStatus();
+  if (!st.installed) {
+    console.log(`  ${c.gold("-")} auto-start is not installed`);
+    console.log(dim("    merrymen service install   — start on login, survive reboots"));
+    return;
+  }
+  console.log(`  ${c.green("+")} installed — ${st.where}`);
+  // Installed and running are different questions. Conflating them is how an
+  // owner believes their agent is trading when it crashed hours ago.
+  console.log(
+    st.running
+      ? `  ${c.green("+")} running right now`
+      : `  ${c.gold("-")} installed but NOT running — it'll start at your next login`,
+  );
+  const tail = serviceLogTail();
+  if (tail) console.log(`\n${dim("recent service log:")}\n${dim(tail)}`);
+}
+
 // ────────────────────────────────────────────────────────────────── main ──
 
 const [, , cmd, ...rest] = process.argv;
@@ -1223,6 +1289,9 @@ switch (cmd) {
     break;
   case "selftest":
     selftest();
+    break;
+  case "service":
+    await serviceCmd(rest[0]);
     break;
   case "kill":
     await kill();
@@ -1255,6 +1324,7 @@ switch (cmd) {
   ${bold("merrymen strategy new")}   forge your own outlaw in ~/.merrymen/strategies
   ${bold("merrymen strategy list")}  the roster — builtins + your strategies
   ${bold("merrymen selftest")}       fire one arrow through the whole pipeline
+  ${bold("merrymen service")}        start on login, survive reboots (install/uninstall/status)
   ${bold("merrymen kill")}           call the band home (kill switch)
   ${bold("merrymen wallets")}        every wallet on this machine + what it holds
   ${bold("merrymen recover")}        sweep your account's funds to a wallet you control
