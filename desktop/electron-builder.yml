@@ -25,6 +25,15 @@ files:
   - "!node_modules/**/{CHANGELOG.md,README.md,readme.md,*.map,*.ts.map}"
   - "!node_modules/merrymen/web/.next/cache/**"
 
+  # DO NOT try to trim node_modules/merrymen with negation patterns here — they
+  # are accepted and then silently ignored, because `merrymen` is a file:..
+  # symlink and exclusions don't apply inside a symlinked package. Seven of them
+  # were added and the rebuilt bundle still contained every directory they named.
+  #
+  # What ships is decided by `npm run stage` (desktop/stage-bundle.mjs), which
+  # replaces the symlink with the contents of `npm pack` — i.e. the root
+  # package.json `files` allowlist. Read that file before changing this one.
+
 # Icons: a single build/icon.png (1024×1024) — electron-builder auto-generates
 # the .ico (Windows) and .icns (macOS) from it, so no per-platform icon needed.
 

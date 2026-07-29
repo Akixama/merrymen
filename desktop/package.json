@@ -1,17 +1,19 @@
 {
   "name": "merrymen-desktop",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "description": "merrymen — the one-click desktop app. Bundles Node, boots the agent worker + dashboard, opens it in a native window. No terminal, no npm.",
   "author": "merrymen",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder",
-    "dist:win": "electron-builder --win",
-    "dist:mac": "electron-builder --mac",
-    "dist:linux": "electron-builder --linux",
-    "check": "node --check main.js"
+    "stage": "node stage-bundle.mjs",
+    "unstage": "node stage-bundle.mjs --restore",
+    "dist": "npm run stage && electron-builder && npm run unstage",
+    "dist:win": "npm run stage && electron-builder --win && npm run unstage",
+    "dist:mac": "npm run stage && electron-builder --mac && npm run unstage",
+    "dist:linux": "npm run stage && electron-builder --linux && npm run unstage",
+    "check": "node --check main.js && node --check stage-bundle.mjs"
   },
   "dependencies": {
     "merrymen": "file:.."
