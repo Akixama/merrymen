@@ -14,10 +14,12 @@ const GITHUB = "https://github.com/millw14/merrymen";
 /**
  * The Windows installer, pinned to an exact asset.
  *
- * Deliberately NOT a link to the releases page. Browsing releases is where
- * someone picks the wrong build — the empty `desktopv0.16` tag is still there,
- * titled "v-0.1.6", and it once carried a pre-security-fix 0.1.4 binary that has
- * since been pulled. Naming the exact file removes the choice.
+ * Deliberately NOT a link to the releases page. A misnamed release — tagged for
+ * the merrymen version it was built against but titled like a desktop version —
+ * once sat there offering a pre-security-fix binary; it has been deleted, and
+ * the remaining releases are all correctly named. Keep pinning the exact file
+ * anyway: this link is right or it is broken, and a broken link is the failure
+ * mode you want, not a silent download of the wrong build.
  *
  * Bump all three together when a new desktop build ships — a stale version label
  * beside a fresh binary is worse than no label. 0.1.7 is less than half the size
@@ -88,10 +90,9 @@ export default function Home() {
                 Get started <span className="box"><Icon name="arrow" size={16} /></span>
               </Link>
             </span>
-            {/* Deep-links the CURRENT installer, not the releases page. Browsing
-                releases is where someone picks the wrong one — the empty
-                `desktopv0.16` tag is still titled "v-0.1.6". Naming the exact
-                asset removes that choice. */}
+            {/* Deep-links the CURRENT installer, not the releases page, so a
+                wrong or stale build is never one click away. See the note on
+                WINDOWS_DOWNLOAD above. */}
             <a href={WINDOWS_DOWNLOAD} className="btn btn-ghost btn-lg">
               <Icon name="arrow" size={15} /> Download for Windows
             </a>
