@@ -24,8 +24,31 @@ export interface PaperBook {
 export interface PaperPosition {
   symbol: string;
   token: `0x${string}`;
-  /** Whole shares (paper needs no 18-dp bigint gymnastics). */
+  /**
+   * SPLIT-INVARIANT shares — the paper equivalent of a raw ERC-20 balance.
+   *
+   * Real Stock Token balances never rebase: a corporate action moves
+   * uiMultiplier() instead, and the reference price moves the opposite way, so
+   * value is unchanged (see positions.ts). The paper book has to hold the same
+   * invariant or it breaks the moment a stock splits — the oracle price halves,
+   * a UI-share count doesn't, and the book reports a 50% loss on an event that
+   * cost nobody anything. Paper equity feeds the drawdown breaker, so that is
+   * not a display bug; it would retire an agent over a stock split.
+   *
+   * So this number is shares AT MULTIPLIER 1.0, and the tradeable quantity today
+   * is `shares × multiplier`. Every token in the registry currently sits at
+   * exactly 1.0, which is why existing books carry over unchanged — the two
+   * readings only diverge after the first real split.
+   */
   shares: number;
+}
+
+/** ERC-8056's 1.0, as a float for the paper book's arithmetic. */
+const MULTIPLIER_ONE = 1;
+
+/** What `shares` is worth in tradeable units at the live multiplier. */
+export function paperUiShares(shares: number, multiplier: number): number {
+  return shares * (multiplier > 0 ? multiplier : MULTIPLIER_ONE);
 }
 
 /** What actually moved on a stock fill — the inputs cost-basis accounting needs. */
@@ -65,6 +88,13 @@ export function applyPaperIntent(
   opts: {
     priceUsdOf: (token: `0x${string}`) => { priceUsd: number; stale: boolean } | null;
     symbolOf: (token: `0x${string}`) => string | null;
+    /**
+     * Live ERC-8056 multiplier as a plain ratio (1.0 = unsplit). Omitted or
+     * null means "couldn't read it", and a stock fill is then REFUSED rather
+     * than assumed to be 1.0 — guessing here books the wrong share count
+     * permanently, and the position outlives the guess.
+     */
+    multiplierOf?: (token: `0x${string}`) => number | null;
     usdgAddress: `0x${string}`;
     slippageBps: number;
     notionalUsdg: number;
@@ -119,9 +149,19 @@ export function applyPaperIntent(
   const staleTag = px.stale ? "px 24/5" : "px live";
   const held = pos.find((p) => p.symbol === symbol);
 
+  // The oracle price is per TRADEABLE share, so every conversion between cash
+  // and the stored (split-invariant) quantity goes through the live multiplier.
+  // A missing multiplier is refused, not defaulted: a wrong share count written
+  // now is wrong for as long as the position is held.
+  const mul = opts.multiplierOf ? opts.multiplierOf(stockToken) : MULTIPLIER_ONE;
+  if (mul === null || !Number.isFinite(mul) || mul <= 0) {
+    return { ok: false, reason: `no ERC-8056 multiplier for ${symbol} — paper fill refused`, book, positions };
+  }
+
   if (buyingStock) {
     if (n > next.cashUsdg) return { ok: false, reason: "paper cash short of the buy", book, positions };
-    const shares = (n * (1 - slip)) / px.priceUsd; // slippage eats into what you get
+    const uiShares = (n * (1 - slip)) / px.priceUsd; // slippage eats into what you get
+    const shares = uiShares / mul; // store split-invariant
     next.cashUsdg = round6(next.cashUsdg - n);
     if (held) held.shares += shares;
     else pos.push({ symbol, token: stockToken, shares });
@@ -129,39 +169,53 @@ export function applyPaperIntent(
       ok: true,
       book: next,
       positions: pos,
-      receipt: `paper fill: +${shares.toFixed(4)} ${symbol} @ $${px.priceUsd.toFixed(2)} (${staleTag})`,
+      // Receipts and basis speak in TRADEABLE shares — that's what the owner
+      // sees quoted and what the price refers to.
+      receipt: `paper fill: +${uiShares.toFixed(4)} ${symbol} @ $${px.priceUsd.toFixed(2)} (${staleTag})`,
       // Cost basis takes the CASH SPENT (n), not shares×price: the slippage is a
       // real cost of the position and belongs in its basis.
-      fill: { side: "buy", symbol, token: stockToken, shares, priceUsd: px.priceUsd, cashUsdg: n },
+      fill: { side: "buy", symbol, token: stockToken, shares: uiShares, priceUsd: px.priceUsd, cashUsdg: n },
     };
   }
 
   // selling stock for USDG
-  const sellShares = n / px.priceUsd;
   if (!held || held.shares <= 0) return { ok: false, reason: `no paper ${symbol} to sell`, book, positions };
-  const actualShares = Math.min(sellShares, held.shares);
-  const proceeds = actualShares * px.priceUsd * (1 - slip);
-  held.shares = round6(held.shares - actualShares);
+  const heldUi = paperUiShares(held.shares, mul);
+  const wantUi = n / px.priceUsd;
+  const soldUi = Math.min(wantUi, heldUi);
+  const proceeds = soldUi * px.priceUsd * (1 - slip);
+  held.shares = round6(held.shares - soldUi / mul);
   next.cashUsdg = round6(next.cashUsdg + proceeds);
   return {
     ok: true,
     book: next,
     positions: pos.filter((p) => p.shares > 1e-9),
-    receipt: `paper fill: −${actualShares.toFixed(4)} ${symbol} @ $${px.priceUsd.toFixed(2)} (${staleTag})`,
+    receipt: `paper fill: −${soldUi.toFixed(4)} ${symbol} @ $${px.priceUsd.toFixed(2)} (${staleTag})`,
     // Proceeds are net of slippage — the cash that actually landed.
-    fill: { side: "sell", symbol, token: stockToken, shares: actualShares, priceUsd: px.priceUsd, cashUsdg: round6(proceeds) },
+    fill: { side: "sell", symbol, token: stockToken, shares: soldUi, priceUsd: px.priceUsd, cashUsdg: round6(proceeds) },
   };
 }
 
-/** Mark-to-market the paper book at live prices. */
+/**
+ * Mark-to-market the paper book at live prices.
+ *
+ * `multiplierOf` is optional so existing callers keep compiling, and absent it
+ * every multiplier reads as 1.0 — correct for every token in the registry today,
+ * and identical to the old behaviour. Pass it and a split becomes value-neutral
+ * here too: the multiplier rises by the same factor the price falls.
+ */
 export function paperEquityUsdg(
   book: PaperBook,
   positions: PaperPosition[],
   priceUsdOf: (token: `0x${string}`) => { priceUsd: number; stale: boolean } | null,
+  multiplierOf?: (token: `0x${string}`) => number | null,
 ): number {
   const posValue = positions.reduce((sum, p) => {
     const px = priceUsdOf(p.token);
-    return sum + (px ? p.shares * px.priceUsd : 0);
+    if (!px) return sum;
+    const mul = multiplierOf ? multiplierOf(p.token) : MULTIPLIER_ONE;
+    const m = mul === null || !Number.isFinite(mul) || mul <= 0 ? MULTIPLIER_ONE : mul;
+    return sum + paperUiShares(p.shares, m) * px.priceUsd;
   }, 0);
   return round6(book.cashUsdg + book.vaultUsdg + posValue);
 }

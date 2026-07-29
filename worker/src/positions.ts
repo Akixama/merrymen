@@ -88,6 +88,52 @@ export interface PositionsRead {
  * IS held but can't be valued (feed/multiplier read failed) is reported in
  * `missingPrice` — never silently valued at zero.
  */
+/** 1.0 in ERC-8056's fixed-point convention. */
+export const UI_MULTIPLIER_ONE = 10n ** 18n;
+
+/**
+ * Just the multipliers, for callers with no on-chain balance to read.
+ *
+ * Paper mode needs these and can't get them from readPositions: it never queries
+ * balances, because the book IS the ledger. But uiMultiplier is a property of the
+ * TOKEN, not of any holding — it's just as real for a simulated position as a
+ * funded one. Without it a stock split halves the paper book overnight and trips
+ * the drawdown breaker on a corporate action that cost nobody anything.
+ *
+ * Fails closed exactly like readPositions: a token whose multiplier can't be read
+ * lands in `unreadable` rather than defaulting to 1.0, because silently assuming
+ * 1.0 after a split is the mis-pricing this whole file exists to prevent.
+ */
+export async function readMultipliers(
+  client: PublicClient,
+  tokens: readonly StockToken[],
+): Promise<{ multipliers: Map<string, bigint>; unreadable: string[] }> {
+  const multipliers = new Map<string, bigint>();
+  const unreadable: string[] = [];
+
+  // Same rule as readPositions: ERC-8056 is a Stock Token thing. Asking a
+  // memecoin would revert, and honouring whatever a random contract returned
+  // would let it scale the owner's equity.
+  const scaled = tokens.filter((t) => t.kind !== "memecoin");
+  for (const t of tokens) if (t.kind === "memecoin") multipliers.set(t.symbol, UI_MULTIPLIER_ONE);
+  if (scaled.length === 0) return { multipliers, unreadable };
+
+  type CallResult = { status: "success"; result: unknown } | { status: "failure"; error: unknown };
+  const results = (await client
+    .multicall({
+      contracts: scaled.map((t) => ({ address: t.address, abi: STOCK_ABI, functionName: "uiMultiplier" })) as never,
+    })
+    .catch(() => null)) as CallResult[] | null;
+  if (!results) return { multipliers, unreadable: scaled.map((t) => t.symbol) };
+
+  scaled.forEach((t, i) => {
+    const r = results[i];
+    if (r?.status === "success" && typeof r.result === "bigint" && r.result > 0n) multipliers.set(t.symbol, r.result);
+    else unreadable.push(t.symbol);
+  });
+  return { multipliers, unreadable };
+}
+
 export async function readPositions(
   client: PublicClient,
   account: `0x${string}`,

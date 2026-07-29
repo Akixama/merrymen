@@ -40,7 +40,8 @@ knob here, because the expensive part *is* the query.
 So the client sends a **name**, not a query:
 
 ```bash
-curl -s https://ai.merrymen.dev/bitquery -H "authorization: Bearer mmk_…" \
+curl -s https://merrymen-gateway-production.up.railway.app/bitquery \
+  -H "authorization: Bearer mmk_…" \
   -H 'content-type: application/json' -d '{"query":"recentPools","variables":{"sinceMinutes":60,"limit":25}}'
 ```
 
@@ -58,12 +59,36 @@ curl -s https://ai.merrymen.dev/bitquery -H "authorization: Bearer mmk_…" \
 hostile queries (including `__proto__`, `constructor`) rejected by name lookup,
 503 when no key is configured, and the rate bucket biting.
 
+## Which host is live right now
+
+**`https://merrymen-gateway-production.up.railway.app`** — this is what the client
+and the website actually call, and the only host with a working certificate.
+
+`ai.merrymen.dev` is registered on the Railway service and its DNS is correct
+(CNAME to the Railway target; CAA on `merrymen.dev` permits `letsencrypt.org`),
+but **TLS still fails** — the edge presents a certificate for the wrong principal,
+so the Let's Encrypt issuance hasn't completed. Plain HTTP to it 301s, which
+means routing is fine and only the certificate is missing. Don't point anything
+at it until `curl https://ai.merrymen.dev/healthz` returns `{"ok":true}`.
+
+When it does land, three hand-written copies of the host have to move together:
+
+| where | constant |
+| --- | --- |
+| `packages/core/src/token.ts` | `MERRYMEN_GATEWAY_ORIGIN` — the merrymen client |
+| `site/lib/gateway.ts` | `GATEWAY_ORIGIN` — the memescope page |
+| `cli/bin.mjs` | the `merrymen` provider's `key` hint, shown during onboarding |
+
+There is no shared import that could enforce that: the website doesn't compile
+the TS core and the CLI is plain ESM that can't import TypeScript at all. So
+`worker/src/gateway-origin.test.ts` fails the suite if the three ever disagree —
+run `npm test` after changing any of them.
+
 ## Two ways to run it
 
 The security logic lives once in `lib/core.mjs`; two thin runtimes wrap it:
 `server.mjs` (a long-lived process) and `api/*.js` (Vercel serverless functions).
-Point the client's domain — `https://ai.merrymen.dev` in the shipped provider
-(`packages/core/src/llm-providers.ts` → the `merrymen` entry) — at whichever you pick.
+Point the client's host at whichever you pick.
 
 ### A) Persistent process (Railway / Fly / Render / VPS / Docker) — RECOMMENDED
 
@@ -110,8 +135,10 @@ functions in `api/`.
 3. Add the three secrets as env vars: `MERRYMEN_GATEWAY_UPSTREAM_KEY`,
    `MERRYMEN_GATEWAY_SECRET` (≥32 bytes), `MERRYMEN_GATEWAY_RPC` (+ optional
    `MERRYMEN_GATEWAY_DOMAIN=ai.merrymen.dev`).
-4. **Deploy.** Then add the custom domain `ai.merrymen.dev` (the DNS is already on
-   Vercel) and confirm: `curl https://ai.merrymen.dev/healthz` → `{"ok":true}`.
+4. **Deploy.** Confirm against the host Vercel gives you:
+   `curl https://<your-deployment>/healthz` → `{"ok":true}`. Only add
+   `ai.merrymen.dev` once its certificate actually issues — see the status note
+   above; today that domain fails TLS and would take the gateway down with it.
 
 ### Endpoints
 - `GET /` or `/claim` — the claim page (holder connects wallet, signs, gets a token).

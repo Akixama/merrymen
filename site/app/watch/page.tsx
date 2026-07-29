@@ -40,10 +40,11 @@ export default function Watch() {
           </p>
           <h3>Why is the tape empty?</h3>
           <p>
-            Three ordinary reasons: the agent is in <strong>paper mode</strong>, which simulates fills
-            and never touches the chain; it hasn&apos;t traded in the last hour; or it has been
-            funded but hasn&apos;t opened a position yet. An empty tape is the honest reading of a
-            quiet account.
+            Two ordinary reasons: the agent is in <strong>paper mode</strong>, which simulates fills
+            and never touches the chain, or it&apos;s funded but hasn&apos;t opened a position yet.
+            The tape shows this account&apos;s most recent token movements with no time limit, so an
+            empty one means there have been none at all — the honest reading of a quiet account,
+            not a failed load.
           </p>
         </div>
       </div>

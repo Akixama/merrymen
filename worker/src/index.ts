@@ -80,7 +80,7 @@ import { startVirtualsStreamer } from "./virtuals-streamer";
 import { createStateRef, ensureLinkCode } from "./telegram/state";
 import { readPositionRaw } from "./telegram/reads";
 import { ensureSoul, getName } from "./soul";
-import { readPositions, type Position } from "./positions";
+import { positionValueUsdg, readMultipliers, readPositions, type Position } from "./positions";
 import { quarantineOf } from "./quarantine";
 import { describeDiscovery, discoverPools, resolveBitquery } from "./discovery";
 import { mainnetClient, readAccountBalances, readMarketSafety, setMainnetRpc } from "./snapshot";
@@ -214,6 +214,22 @@ async function main() {
   }
   const paperSymbolOf = (token: `0x${string}`) =>
     watchTokens.find((w) => w.address.toLowerCase() === token.toLowerCase())?.symbol ?? null;
+  /**
+   * Live ERC-8056 multipliers, refreshed each paper tick.
+   *
+   * Paper mode never reads balances, so it never went through readPositions and
+   * never saw a multiplier — which meant a stock split halved the paper book and
+   * could retire an agent over a corporate action that cost nothing. Returning
+   * null (not 1.0) for an unread token is deliberate: the fill path refuses
+   * rather than guessing a share count it would then hold onto.
+   */
+  let lastMultipliers: Map<string, bigint> = new Map();
+  const paperMultiplierOf = (token: `0x${string}`): number | null => {
+    const t = watchTokens.find((w) => w.address.toLowerCase() === token.toLowerCase());
+    if (!t) return null;
+    const m = lastMultipliers.get(t.symbol);
+    return m === undefined ? null : Number(m) / 1e18;
+  };
   const paperPositionsOf = (shares: Record<string, { token: `0x${string}`; shares: number }>): PaperPosition[] =>
     Object.entries(shares).map(([symbol, v]) => ({ symbol, token: v.token, shares: v.shares }));
 
@@ -841,6 +857,7 @@ async function main() {
         {
           priceUsdOf: paperPriceOf,
           symbolOf: paperSymbolOf,
+          multiplierOf: paperMultiplierOf,
           usdgAddress: CASH.USDG as `0x${string}`,
           slippageBps: cfg.slippageBps,
           notionalUsdg: usdgNum(notional),
@@ -1227,26 +1244,40 @@ async function main() {
       const bookRow = await getPaperBook(agentId, cfg.paperStartUsdg);
       balances = { ethWei: 0n, cashUsdg: usdg(bookRow.cashUsdg), vaultUsdg: usdg(bookRow.vaultUsdg) };
       positions = [];
+      // Multipliers are a property of the token, not of a holding, so they matter
+      // just as much to a simulated position as a funded one. An unreadable one
+      // goes to missingPrice, which holds the tick — the same fail-closed rule
+      // readPositions uses, and for the same reason: valuing a post-split
+      // position at the pre-split multiplier books a drawdown that never happened.
+      const mults = await readMultipliers(client, watchTokens);
+      lastMultipliers = mults.multipliers;
       for (const p of paperPositionsOf(bookRow.shares)) {
         if (p.shares <= 0) continue;
         const px = paperPriceOf(p.token);
-        if (!px) {
+        const mul = mults.multipliers.get(p.symbol);
+        if (!px || mul === undefined) {
           missingPrice.push(p.symbol);
           continue;
         }
+        // `shares` is split-invariant, so it IS the raw balance in 18dp terms and
+        // the real multiplier applies on top — exactly the on-chain arithmetic.
+        const rawBalance = BigInt(Math.round(p.shares * 1e18));
+        const price8 = BigInt(Math.round(px.priceUsd * 1e8));
         positions.push({
           symbol: p.symbol,
           token: p.token,
-          rawBalance: BigInt(Math.round(p.shares * 1e18)),
-          uiMultiplier: 10n ** 18n,
-          // The paper book stores whole shares, so its synthetic raw balance is
-          // normalised to 18dp regardless of the real token's decimals. This
-          // labels the number that's actually here, not the on-chain convention.
+          rawBalance,
+          uiMultiplier: mul,
+          // The paper book normalises to 18dp regardless of the real token's
+          // decimals. This labels the number that's actually here, not the
+          // on-chain convention.
           decimals: 18,
-          price8: BigInt(Math.round(px.priceUsd * 1e8)),
+          price8,
           priceStale: px.stale,
           priceSource: px.source,
-          valueUsdg: usdg(p.shares * px.priceUsd),
+          // Same helper the funded path uses, so paper and live can't drift into
+          // two different definitions of what a position is worth.
+          valueUsdg: positionValueUsdg({ rawBalance, uiMultiplier: mul, price8, decimals: 18 }),
         });
       }
     } else {
