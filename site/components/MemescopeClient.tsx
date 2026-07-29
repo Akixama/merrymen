@@ -74,11 +74,19 @@ export function MemescopeClient() {
     return <p className="scope-status"><span className="watch-dot watch-dot-loading" aria-hidden /> reading the chain…</p>;
   }
 
+  const stamps = pools.map((p) => p.createdAt).filter((t) => Number.isFinite(t) && t > 0);
+  const newest = stamps.length ? Math.max(...stamps) : null;
+  const oldest = stamps.length ? Math.min(...stamps) : null;
+
   return (
     <>
       <div className="scope-status">
         <span className={`watch-dot watch-dot-${note ? "error" : "live"}`} aria-hidden />
-        {note ? note : `${pools.length} new pool${pools.length === 1 ? "" : "s"} in the last 12 hours`}
+        {/* Report the span actually returned, never a window we merely asked
+            for. The upstream caps the number of events, and this chain opens
+            pools fast enough that the cap — not the time window — is what
+            decides how far back the list reaches. */}
+        {note ? note : `${pools.length} launch${pools.length === 1 ? "" : "es"}${oldest ? ` · newest ${ageOf(newest!)}, oldest ${ageOf(oldest)}` : ""}`}
         {stale && !note && <span className="watch-warn"> · showing the last good read</span>}
       </div>
 
@@ -89,7 +97,7 @@ export function MemescopeClient() {
           ))}
         </ul>
       ) : (
-        !note && <p className="scope-empty">No pools opened in the last twelve hours. Quiet chain.</p>
+        !note && <p className="scope-empty">No new pools right now. Quiet chain.</p>
       )}
     </>
   );

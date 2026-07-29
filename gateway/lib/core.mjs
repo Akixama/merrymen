@@ -423,7 +423,13 @@ export function createGateway(cfg) {
   let scope = { at: 0, rows: [], inflight: null };
 
   async function fetchScope() {
-    const built = BITQUERY_QUERIES.recentPools.build({ sinceMinutes: 720, limit: 40 });
+    // The LIMIT binds here, not the time window. This chain opens pools fast
+    // enough that 40 events covered roughly a minute of activity, which made a
+    // "last 12 hours" window meaningless — it was really "the most recent 40".
+    // 100 is the clamp's ceiling; the window stays generous so it never becomes
+    // the binding constraint, and the page reports the span it actually got
+    // rather than the one that was asked for.
+    const built = BITQUERY_QUERIES.recentPools.build({ sinceMinutes: 720, limit: 100 });
     const upstream = await fetch(bitqueryUrl, {
       method: "POST",
       headers: {
