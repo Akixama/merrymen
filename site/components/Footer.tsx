@@ -31,6 +31,8 @@ export function Footer() {
           <div className="foot-col">
             <h5>Product</h5>
             <Link href="/#features">Features</Link>
+            <Link href="/memescope">Memescope</Link>
+            <Link href="/watch">Watch it trade</Link>
             <Link href="/#telegram">Telegram</Link>
             <Link href="/#install">Install</Link>
             <Link href="/#safety">Safety model</Link>

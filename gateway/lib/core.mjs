@@ -23,7 +23,69 @@ export const DEFAULTS = {
   // it gets its OWN tighter bucket. Sharing the chat allowance would let a
   // background poll quietly starve the brain the same holder is paying for.
   BITQUERY_RATE_PER_MIN: 6,
+  // How long the PUBLIC memescope is served from one shared answer. This number
+  // is the whole cost model of that route: the upstream is hit at most once per
+  // this many seconds no matter how many people are watching, so traffic and
+  // spend are decoupled. Lower it and you are buying freshness with the
+  // operator's own Bitquery allowance.
+  MEMESCOPE_TTL_SEC: 45,
+  // Per-IP cap on the public route. This protects the gateway PROCESS, not the
+  // bill — the bill is already bounded by the shared cache above.
+  MEMESCOPE_RATE_PER_MIN: 30,
 };
+
+/**
+ * Sides of a pair that mean "cash", so the other side is the launch.
+ * Mirrors CASH_SIDE in worker/src/discovery.ts — same rule, different runtime.
+ */
+const CASH_SIDE = new Set([
+  "0x5fc5360d0400a0fd4f2af552add042d716f1d168", // USDG
+  "0x0bd7d308f8e1639fab988df18a8011f41eacad73", // WETH
+  "0x0000000000000000000000000000000000000000",
+]);
+
+/**
+ * A contract-reported symbol, made safe to render.
+ *
+ * Mirrors sanitizeSymbol in worker/src/discovery.ts. A token name is attacker
+ * chosen — it is whatever someone put in their own contract — so it reaches a
+ * web page stripped to a known alphabet and hard length-capped, never as
+ * arbitrary text. React escapes HTML on its own; this also strips the RTL marks
+ * and zero-width characters that let a name disguise itself as another token.
+ */
+export function sanitizeSymbol(raw) {
+  if (typeof raw !== "string") return "?";
+  const cleaned = raw.replace(/[^A-Za-z0-9._-]/g, "").slice(0, 16);
+  return cleaned.length > 0 ? cleaned : "?";
+}
+
+/**
+ * One Bitquery `Initialize` event → {token, quote, createdAt, txHash}, or null.
+ * Ported from parsePoolEvent in worker/src/venues/bitquery.ts; exported so the
+ * gateway's own tests can pin the shape third-party JSON has to arrive in.
+ */
+export function parseInitializeEvent(ev) {
+  if (!ev || typeof ev !== "object") return null;
+  const addrs = [];
+  for (const a of ev.Arguments ?? []) {
+    const v = a?.Value?.address;
+    if (typeof v === "string" && /^0x[0-9a-fA-F]{40}$/.test(v)) addrs.push(v.toLowerCase());
+  }
+  if (addrs.length < 2) return null;
+  const time = ev.Block?.Time ? Math.floor(new Date(ev.Block.Time).getTime() / 1000) : 0;
+  if (!Number.isFinite(time) || time <= 0) return null;
+  const [a, b] = addrs;
+  const aCash = CASH_SIDE.has(a);
+  const bCash = CASH_SIDE.has(b);
+  // Both cash, or neither, is not a launch — nothing to scope.
+  if (aCash === bCash) return null;
+  return {
+    token: aCash ? b : a,
+    quote: aCash ? a : b,
+    createdAt: time,
+    txHash: typeof ev.Transaction?.Hash === "string" ? ev.Transaction.Hash : "",
+  };
+}
 
 /** Clamp a client-supplied integer into a server-decided range. */
 export function clampInt(v, min, max, fallback) {
@@ -321,6 +383,124 @@ export function createGateway(cfg) {
     }
   }
 
+  /**
+   * PUBLIC memescope — newly launched pools, no holder token required.
+   *
+   * COST IS THE ENTIRE DESIGN HERE, because this route has no auth in front of
+   * it and every upstream call lands on the operator's Bitquery bill. Two
+   * properties keep an unauthenticated route affordable:
+   *
+   *   ONE SHARED ANSWER. Everybody watching sees the same cache entry, so a
+   *   thousand viewers cost exactly what one viewer costs — at most one upstream
+   *   query per MEMESCOPE_TTL_SEC, forever, regardless of traffic.
+   *
+   *   SINGLE FLIGHT. On a cold or expired cache, concurrent requests await the
+   *   SAME in-flight promise instead of each starting their own query. Without
+   *   this, a burst of 200 visitors the moment the cache expires is 200 upstream
+   *   calls — the exact spike the TTL was supposed to prevent.
+   *
+   * The cache is process-local, which is correct for the long-lived Railway
+   * server this route is meant for. On serverless each isolate would keep its
+   * own copy and the effective rate becomes (isolates / TTL) — still bounded,
+   * but no longer one. Don't deploy this route to a fleet without moving the
+   * cache into `store`.
+   */
+  let scope = { at: 0, rows: [], inflight: null };
+
+  async function fetchScope() {
+    const built = BITQUERY_QUERIES.recentPools.build({ sinceMinutes: 720, limit: 40 });
+    const upstream = await fetch(bitqueryUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${bitqueryKey}`,
+        "X-API-KEY": bitqueryKey,
+      },
+      body: JSON.stringify(built),
+    });
+    if (!upstream.ok) throw new Error(`bitquery HTTP ${upstream.status}`);
+    const body = await upstream.json();
+    // A GraphQL endpoint answers 200 with an `errors` array when the QUERY is
+    // wrong, so an HTTP-only check reports "unavailable" for a service that
+    // replied perfectly well and told us exactly what it disliked.
+    if (Array.isArray(body?.errors) && body.errors.length) {
+      throw new Error(`bitquery rejected the query: ${body.errors.map((e) => e?.message).filter(Boolean).join("; ").slice(0, 300)}`);
+    }
+    const events = body?.data?.EVM?.Events ?? [];
+
+    const pairs = [];
+    const seen = new Set();
+    for (const ev of events) {
+      const p = parseInitializeEvent(ev);
+      // One row per token. The same token can initialize several pools (fee
+      // tiers, v3 and v4 side by side) and a scope listing it four times reads
+      // as four launches.
+      if (!p || seen.has(p.token)) continue;
+      seen.add(p.token);
+      pairs.push(p);
+    }
+
+    // Names come from the CONTRACT, never from the indexer. A launch can call
+    // itself anything in third-party metadata; what the token itself reports is
+    // the only claim that is actually on-chain.
+    const named = await Promise.all(
+      pairs.map(async (p) => {
+        try {
+          const [symbol, decimals] = await Promise.all([
+            publicClient.readContract({ address: p.token, abi: erc20Abi, functionName: "symbol" }),
+            publicClient.readContract({ address: p.token, abi: erc20Abi, functionName: "decimals" }),
+          ]);
+          return { ...p, symbol: sanitizeSymbol(symbol), decimals: Number(decimals) };
+        } catch {
+          // Unreadable is a real answer, and a common one for a token that is
+          // a proxy, a honeypot, or simply not an ERC-20. Say so rather than
+          // inventing a name — the address is still shown and still clickable.
+          return { ...p, symbol: null, decimals: null };
+        }
+      }),
+    );
+    return named.sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  async function memescope({ ip }) {
+    if (!bitqueryKey) {
+      return { status: 503, json: { error: "this gateway has no Bitquery key configured" } };
+    }
+    if (!(await store.rateHit(`ms:${ip}`, T.MEMESCOPE_RATE_PER_MIN, 60))) {
+      return { status: 429, json: { error: "rate limit — the scope refreshes every 45s, polling faster shows nothing new" } };
+    }
+    const fresh = Date.now() - scope.at < T.MEMESCOPE_TTL_SEC * 1000;
+    if (fresh) return { status: 200, json: { pools: scope.rows, cached: true, ttl: T.MEMESCOPE_TTL_SEC } };
+
+    if (!scope.inflight) {
+      scope.inflight = fetchScope()
+        .then((rows) => {
+          scope = { at: Date.now(), rows, inflight: null };
+          return rows;
+        })
+        .catch((err) => {
+          scope.inflight = null;
+          throw err;
+        });
+    }
+    try {
+      const rows = await scope.inflight;
+      return { status: 200, json: { pools: rows, cached: false, ttl: T.MEMESCOPE_TTL_SEC } };
+    } catch (err) {
+      // Log the REASON. Returning a bare 502 and swallowing the cause makes an
+      // operator guess between a bad key, a plan limit, a rejected query and a
+      // network blip — all of which look identical from outside. The message is
+      // safe to print; the key only ever travels in a request header.
+      console.error(`[gateway] memescope upstream failed: ${err instanceof Error ? err.message : String(err)}`);
+      // Serve stale rather than nothing: a scope that briefly stops updating is
+      // far better than a page that breaks because a data provider blinked.
+      if (scope.rows.length) {
+        return { status: 200, json: { pools: scope.rows, cached: true, stale: true, ttl: T.MEMESCOPE_TTL_SEC } };
+      }
+      return { status: 502, json: { error: "bitquery unavailable" } };
+    }
+  }
+
   return {
     health,
     serveClaimPage: (html) => ({ status: 200, html }),
@@ -328,6 +508,7 @@ export function createGateway(cfg) {
     claim,
     chat,
     bitquery,
+    memescope,
     bitqueryQueries: () => Object.keys(BITQUERY_QUERIES),
     // exposed for the standalone server + tests
     isHolder,

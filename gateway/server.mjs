@@ -86,19 +86,27 @@ function readBody(req) {
   });
 }
 
-// No `access-control-allow-origin`: the claim page is same-origin and the client
-// is a server-side (Node) caller exempt from CORS. Withholding ACAO stops a
-// phishing page from reading a minted token.
+// CORS is OFF by default and stays off. The claim page is same-origin and the
+// merrymen client is a server-side (Node) caller exempt from CORS, so no route
+// needs ACAO to work — while withholding it is what stops a phishing page from
+// minting a token in a victim's browser and reading it back.
+//
+// A handler opts in per-response with `cors: true`, and exactly one does:
+// /memescope, which returns public pool data, requires no token, and has to be
+// readable from the marketing site's origin. Never widen this to a blanket
+// header — the value of the default is that it applies to everything holding a
+// credential.
 function respond(res, r) {
+  const cors = r.cors ? { "access-control-allow-origin": "*" } : undefined;
   if (r.html !== undefined) {
-    res.writeHead(r.status, { "content-type": "text/html; charset=utf-8" });
+    res.writeHead(r.status, { "content-type": "text/html; charset=utf-8", ...cors });
     return res.end(r.html);
   }
   if (r.text !== undefined) {
-    res.writeHead(r.status, { "content-type": r.contentType || "application/json" });
+    res.writeHead(r.status, { "content-type": r.contentType || "application/json", ...cors });
     return res.end(r.text);
   }
-  res.writeHead(r.status, { "content-type": "application/json" });
+  res.writeHead(r.status, { "content-type": "application/json", ...cors });
   res.end(JSON.stringify(r.json ?? {}));
 }
 
@@ -154,6 +162,14 @@ const server = createServer(async (req, res) => {
     // So a client can discover what this gateway will answer without guessing.
     if (req.method === "GET" && pathname === "/bitquery") {
       return respond(res, { status: 200, json: { queries: gw.bitqueryQueries() } });
+    }
+
+    // The PUBLIC scope — no token, readable cross-origin by the website. It is
+    // affordable only because every caller shares one cached answer; see the
+    // cost note on memescope() in lib/core.mjs before changing anything here.
+    if (req.method === "GET" && pathname === "/memescope") {
+      const r = await gw.memescope({ ip });
+      return respond(res, { ...r, cors: true });
     }
 
     respond(res, { status: 404, json: { error: "not found" } });

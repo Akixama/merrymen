@@ -10,7 +10,7 @@ process.env.MERRYMEN_GATEWAY_SECRET ||= "test-secret-at-least-32-bytes-long-for-
 process.env.MERRYMEN_GATEWAY_RPC ||= "https://example.invalid";
 
 import assert from "node:assert/strict";
-import { createGateway, DEFAULTS } from "./lib/core.mjs";
+import { createGateway, DEFAULTS, parseInitializeEvent, sanitizeSymbol } from "./lib/core.mjs";
 import { createStore } from "./lib/store.mjs";
 
 const SECRET = process.env.MERRYMEN_GATEWAY_SECRET;
@@ -137,4 +137,100 @@ await rated.bitquery({ token: rt, body: { query: "ping" }, ip: "3.3.3.3" });
 assert.equal((await rated.bitquery({ token: rt, body: { query: "ping" }, ip: "3.3.3.3" })).status, 429, "discovery is rate-limited per address");
 assert.ok(DEFAULTS.BITQUERY_RATE_PER_MIN < DEFAULTS.RATE_PER_MIN, "discovery is limited harder than chat by default");
 
+// ── /memescope: the PUBLIC route ─────────────────────────────────────────────
+// This one has no holder check in front of it, so its cost properties are load
+// bearing rather than nice to have. Each assertion below is guarding the
+// operator's Bitquery bill against a route strangers can call.
+
+const USDG = "0x5fc5360d0400a0fd4f2af552add042d716f1d168";
+const WETH_ADDR = "0x0bd7d308f8e1639fab988df18a8011f41eacad73";
+const MEME = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const evt = (a, b, iso = "2026-07-29T00:00:00Z", hash = "0xdead") => ({
+  Block: { Time: iso },
+  Transaction: { Hash: hash },
+  Arguments: [{ Value: { address: a } }, { Value: { address: b } }],
+});
+
+assert.equal(parseInitializeEvent(evt(USDG, MEME)).token, MEME, "the non-cash side is the launch");
+assert.equal(parseInitializeEvent(evt(MEME, USDG)).token, MEME, "…whichever order it arrives in");
+assert.equal(parseInitializeEvent(evt(USDG, WETH_ADDR)), null, "a cash/cash pool is not a launch");
+assert.equal(parseInitializeEvent(evt(MEME, "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")), null, "neither side cash = nothing to price against");
+assert.equal(parseInitializeEvent({ Arguments: [] }), null, "a malformed event is dropped, not thrown on");
+assert.equal(parseInitializeEvent(evt(USDG, MEME, "not-a-date")), null, "an unparseable timestamp is dropped");
+
+// A token name is attacker-chosen text on its way to a web page.
+assert.equal(sanitizeSymbol("<script>x</script>"), "scriptxscript", "markup characters are stripped");
+assert.equal(sanitizeSymbol("USDG‮evil"), "USDGevil", "the RTL override that disguises a name is stripped");
+assert.equal(sanitizeSymbol("​​"), "?", "a zero-width-only name is not blank, it's unknown");
+assert.equal(sanitizeSymbol("A".repeat(99)).length, 16, "length is hard-capped");
+assert.equal(sanitizeSymbol(null), "?", "a non-string symbol never reaches the page");
+
+const noKeyScope = createGateway({ ...baseCfg, secret: SECRET, store, publicClient: holderClient });
+assert.equal((await noKeyScope.memescope({ ip: "9.9.9.1" })).status, 503, "no Bitquery key = 503, and nothing else is attempted");
+
+// Count real upstream hits by stubbing fetch. `gate` lets the test hold the
+// first call open so concurrent callers genuinely overlap.
+const realFetch = globalThis.fetch;
+let upstreamCalls = 0;
+let release;
+let gate = new Promise((r) => (release = r));
+globalThis.fetch = async () => {
+  upstreamCalls++;
+  await gate;
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({ data: { EVM: { Events: [evt(USDG, MEME), evt(USDG, MEME, "2026-07-29T00:01:00Z", "0xbeef")] } } }),
+  };
+};
+
+const scopeClient = { readContract: async ({ functionName }) => (functionName === "symbol" ? "PEPE" : 18) };
+const ms = createGateway({
+  ...baseCfg,
+  secret: SECRET,
+  store,
+  bitqueryKey: "k",
+  bitqueryUrl: "https://example.invalid/graphql",
+  publicClient: scopeClient,
+  tunables: { MEMESCOPE_RATE_PER_MIN: 10_000 },
+});
+
+// THE COST PROPERTY: a crowd arriving on a cold cache is ONE upstream query.
+// Without single-flight this is one query per viewer, which is how a public
+// route on a metered API becomes a bill.
+const crowd = Promise.all(Array.from({ length: 50 }, () => ms.memescope({ ip: "9.9.9.2" })));
+release();
+const answers = await crowd;
+assert.equal(upstreamCalls, 1, "50 concurrent viewers cost exactly ONE upstream query");
+assert.equal(answers.every((a) => a.status === 200), true, "…and every one of them still got an answer");
+assert.equal(answers[0].json.pools.length, 1, "the same token initializing twice is one row, not two");
+assert.equal(answers[0].json.pools[0].symbol, "PEPE", "the symbol comes from the contract read");
+
+// And a later viewer inside the TTL adds nothing at all.
+await ms.memescope({ ip: "9.9.9.3" });
+assert.equal(upstreamCalls, 1, "a call inside the TTL is served from cache — still one query");
+
+// A provider having a bad minute must not blank the page.
+globalThis.fetch = async () => {
+  upstreamCalls++;
+  throw new Error("upstream down");
+};
+// bitqueryUrl MUST be set on every gateway built here. Omitting it falls back to
+// the real streaming.bitquery.io, and this file is meant to touch no network at
+// all — an earlier version of this test genuinely called Bitquery with a fake
+// key and got a 402 back.
+const stale = await createGateway({ ...baseCfg, secret: SECRET, store, bitqueryKey: "k", bitqueryUrl: "https://example.invalid/graphql", publicClient: scopeClient, tunables: { MEMESCOPE_TTL_SEC: 0, MEMESCOPE_RATE_PER_MIN: 10_000 } }).memescope({ ip: "9.9.9.4" });
+assert.equal(stale.status, 502, "with nothing cached yet, an upstream failure is an honest 502");
+
+const wasFresh = await ms.memescope({ ip: "9.9.9.5" });
+assert.equal(wasFresh.status, 200, "a gateway that already has rows keeps serving them when upstream fails");
+
+globalThis.fetch = realFetch;
+
+// The per-IP cap protects the process; the cache above already protects the bill.
+const capped = createGateway({ ...baseCfg, secret: SECRET, store, bitqueryKey: "k", bitqueryUrl: "https://example.invalid/graphql", publicClient: scopeClient, tunables: { MEMESCOPE_RATE_PER_MIN: 1 } });
+await capped.memescope({ ip: "9.9.9.6" });
+assert.equal((await capped.memescope({ ip: "9.9.9.6" })).status, 429, "the public route is rate-limited per IP");
+
 console.log("[gateway] selftest OK — /bitquery: named queries only, no raw GraphQL, key-gated, own rate bucket");
+console.log("[gateway] selftest OK — /memescope: public, one shared query per TTL, single-flight under load, serves stale over blank");
