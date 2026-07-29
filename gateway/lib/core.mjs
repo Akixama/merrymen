@@ -100,6 +100,22 @@ export function clientIp(xff, remote) {
   return remote || "unknown";
 }
 
+/**
+ * The right auth header for whichever Bitquery credential the operator set.
+ *
+ * Bitquery has two credential types and two eras of endpoint. The legacy V1 API
+ * key goes in `X-API-KEY`; the V2 OAuth access token (`ory_at_…`, issued from
+ * Authorization → Applications) goes in `Authorization: Bearer`. Sending BOTH
+ * headers with the same value — which this did — is fine for a V1 key but hands
+ * a V2 endpoint two conflicting credentials and invites exactly the opaque 402
+ * we spent a deploy chasing. Send one, chosen by what the value actually is.
+ */
+export function bitqueryAuthHeaders(key) {
+  return String(key).startsWith("ory_at_")
+    ? { authorization: `Bearer ${key}` }
+    : { "X-API-KEY": key };
+}
+
 export function createGateway(cfg) {
   const {
     secret,
@@ -365,8 +381,7 @@ export function createGateway(cfg) {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          authorization: `Bearer ${bitqueryKey}`,
-          "X-API-KEY": bitqueryKey,
+          ...bitqueryAuthHeaders(bitqueryKey),
         },
         body: JSON.stringify(built),
       });
@@ -413,8 +428,7 @@ export function createGateway(cfg) {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: `Bearer ${bitqueryKey}`,
-        "X-API-KEY": bitqueryKey,
+        ...bitqueryAuthHeaders(bitqueryKey),
       },
       body: JSON.stringify(built),
     });

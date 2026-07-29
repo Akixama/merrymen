@@ -10,7 +10,7 @@ process.env.MERRYMEN_GATEWAY_SECRET ||= "test-secret-at-least-32-bytes-long-for-
 process.env.MERRYMEN_GATEWAY_RPC ||= "https://example.invalid";
 
 import assert from "node:assert/strict";
-import { createGateway, DEFAULTS, parseInitializeEvent, sanitizeSymbol } from "./lib/core.mjs";
+import { bitqueryAuthHeaders, createGateway, DEFAULTS, parseInitializeEvent, sanitizeSymbol } from "./lib/core.mjs";
 import { createStore } from "./lib/store.mjs";
 
 const SECRET = process.env.MERRYMEN_GATEWAY_SECRET;
@@ -164,6 +164,13 @@ assert.equal(sanitizeSymbol("USDG‮evil"), "USDGevil", "the RTL override that d
 assert.equal(sanitizeSymbol("​​"), "?", "a zero-width-only name is not blank, it's unknown");
 assert.equal(sanitizeSymbol("A".repeat(99)).length, 16, "length is hard-capped");
 assert.equal(sanitizeSymbol(null), "?", "a non-string symbol never reaches the page");
+
+// Bitquery has two credential types and they take DIFFERENT headers. Sending
+// both at once is what produced an opaque 402 against the V2 endpoint.
+assert.deepEqual(bitqueryAuthHeaders("BQYlegacykey"), { "X-API-KEY": "BQYlegacykey" }, "a V1 API key goes in X-API-KEY");
+assert.deepEqual(bitqueryAuthHeaders("ory_at_abc.def"), { authorization: "Bearer ory_at_abc.def" }, "a V2 OAuth token goes in Authorization: Bearer");
+assert.equal("authorization" in bitqueryAuthHeaders("BQYlegacykey"), false, "a V1 key never also sends a Bearer header");
+assert.equal("X-API-KEY" in bitqueryAuthHeaders("ory_at_abc.def"), false, "a V2 token never also sends X-API-KEY");
 
 const noKeyScope = createGateway({ ...baseCfg, secret: SECRET, store, publicClient: holderClient });
 assert.equal((await noKeyScope.memescope({ ip: "9.9.9.1" })).status, 503, "no Bitquery key = 503, and nothing else is attempted");
