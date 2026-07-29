@@ -12,6 +12,19 @@ const MARQUEE = [
 const GITHUB = "https://github.com/millw14/merrymen";
 
 /**
+ * The beta testers' room — an open Telegram invite. Anyone with the link joins,
+ * which is the point while the band is still being tuned.
+ *
+ * NOT the same thing as the Telegram section further down the page. That one is
+ * about connecting YOUR bot to YOUR agent: the token is a credential and the
+ * chat is yours alone. This is a shared room with strangers in it. The two must
+ * never read as the same feature, because the failure mode is someone pasting a
+ * bot token or a grant link into a group chat to get help debugging — which is
+ * why the caution sits next to the button rather than buried in the docs.
+ */
+const TELEGRAM_BETA = "https://t.me/+oL-7xzghFwA4OTc8";
+
+/**
  * The Windows installer, pinned to an exact asset.
  *
  * Deliberately NOT a link to the releases page. A misnamed release — tagged for
@@ -434,8 +447,9 @@ npm install -g merrymen && merrymen start`}
           </div>
 
           <p className="words-invite" data-reveal="up" style={{ ["--d" as string]: "140ms" }}>
-            Riding with the band? Tell us what broke and what sang —{" "}
-            <a href="https://x.com/MerrymenAI" target="_blank" rel="noreferrer">@MerrymenAI</a> or a{" "}
+            Riding with the band? Tell us what broke and what sang — the{" "}
+            <a href={TELEGRAM_BETA} target="_blank" rel="noreferrer">beta group on Telegram</a>,{" "}
+            <a href="https://x.com/MerrymenAI" target="_blank" rel="noreferrer">@MerrymenAI</a>, or a{" "}
             <a href={GITHUB + "/issues"} target="_blank" rel="noreferrer">GitHub issue</a>. Real words
             from real riders end up here.
           </p>
@@ -453,10 +467,20 @@ npm install -g merrymen && merrymen start`}
                 Read the docs <span className="box"><Icon name="arrow" size={16} /></span>
               </Link>
             </span>
+            <a href={TELEGRAM_BETA} target="_blank" rel="noreferrer" className="btn btn-ghost btn-lg">
+              <Icon name="chat" size={15} /> Join the beta
+            </a>
             <a href={GITHUB} target="_blank" rel="noreferrer" className="btn btn-ghost btn-lg">
               GitHub
             </a>
           </div>
+          {/* The caution belongs HERE, beside the invite, not in the docs. A beta
+              support room is exactly where someone pastes a token to get help. */}
+          <p className="cta-note" data-reveal="up" style={{ ["--d" as string]: "220ms" }}>
+            The beta group is open — early builds, rough edges, and a direct line to whoever broke it.
+            It&apos;s a room with other riders in it, so keep your bot token, grant link and private
+            key out of it. Nobody there ever needs them.
+          </p>
         </div>
         <Wordmark />
       </section>

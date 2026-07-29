@@ -6,6 +6,14 @@ const GITHUB = "https://github.com/millw14/merrymen";
 const NPM = "https://www.npmjs.com/package/merrymen";
 const X_URL = "https://x.com/MerrymenAI";
 const SUPPORT = "support@merrymen.dev";
+/**
+ * The beta testers' room. Labelled "Beta group" rather than "Telegram" on
+ * purpose — the Product and Docs columns already say "Telegram", meaning the
+ * bot you connect to your own agent. Three identical labels pointing at two
+ * unrelated things is how someone ends up pasting a bot token into a group
+ * chat. Kept in sync with TELEGRAM_BETA in app/page.tsx.
+ */
+const TELEGRAM_BETA = "https://t.me/+oL-7xzghFwA4OTc8";
 
 export function Footer() {
   return (
@@ -39,6 +47,7 @@ export function Footer() {
 
           <div className="foot-col">
             <h5>Project</h5>
+            <a href={TELEGRAM_BETA} target="_blank" rel="noreferrer">Beta group</a>
             <a href={X_URL} target="_blank" rel="noreferrer">X (Twitter)</a>
             <a href={GITHUB} target="_blank" rel="noreferrer">GitHub</a>
             <a href={NPM} target="_blank" rel="noreferrer">npm</a>

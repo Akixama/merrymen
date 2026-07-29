@@ -280,6 +280,9 @@ code.inline {
 .cta .wordmark-wrap { margin-top: 24px; }
 .cta h2 { font-size: clamp(32px, 5vw, 60px); margin: 0; }
 .cta p { color: var(--text-dim); margin: 18px auto 0; max-width: 46ch; font-size: 17px; }
+/* Needs `p.cta-note`, not `.cta-note` — `.cta p` above is more specific and
+   would otherwise win on colour and size. */
+.cta p.cta-note { color: var(--text-faint); font-size: 13.5px; line-height: 1.65; margin: 22px auto 0; max-width: 62ch; }
 
 /* ---------- footer ---------- */
 footer.foot { border-top: 1px solid var(--border-soft); padding: 64px 0 44px; margin-top: 40px; }

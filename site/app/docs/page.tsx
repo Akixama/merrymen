@@ -13,6 +13,8 @@ const TOC = [
 ] as const;
 
 const GITHUB = "https://github.com/millw14/merrymen";
+/** Beta testers' room. Kept in sync with TELEGRAM_BETA in app/page.tsx and components/Footer.tsx. */
+const TELEGRAM_BETA = "https://t.me/+oL-7xzghFwA4OTc8";
 
 export default function Docs() {
   return (
@@ -344,7 +346,14 @@ merrymen kill       # kill switch — destroys the grant`}
         <h3>A PC command is refused</h3>
         <p>Enable <strong>remote control</strong> and the specific capability in settings. Shell/apps also need the exact command/app on their allowlist; <code className="inline">/pc</code> shows what&apos;s on.</p>
         <h3>Still stuck?</h3>
-        <p>Email <a className="link" href="mailto:support@merrymen.dev">support@merrymen.dev</a> or open an issue on <a className="link" href="https://github.com/millw14/merrymen" target="_blank" rel="noreferrer">GitHub</a> — include your OS and what <code className="inline">merrymen doctor</code> prints.</p>
+        <p>Ask in the <a className="link" href={TELEGRAM_BETA} target="_blank" rel="noreferrer">beta group on Telegram</a>, email <a className="link" href="mailto:support@merrymen.dev">support@merrymen.dev</a>, or open an issue on <a className="link" href="https://github.com/millw14/merrymen" target="_blank" rel="noreferrer">GitHub</a> — include your OS and what <code className="inline">merrymen doctor</code> prints.</p>
+        <p>
+          <code className="inline">merrymen doctor</code> is safe to share: it reports <em>whether</em> a key is
+          set, never the key itself (it does print install paths, which include your username). Your{" "}
+          <strong>bot token, private key and grant link</strong> are a different matter — nobody helping you
+          needs them, and the beta group is a room with strangers in it. If you screenshot the settings page,
+          check what&apos;s in the fields first.
+        </p>
 
         {/* ── faq ── */}
         <h2 id="faq">FAQ</h2>
