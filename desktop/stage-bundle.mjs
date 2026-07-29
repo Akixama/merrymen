@@ -114,6 +114,14 @@ function isLink(p) {
  * then recurse.
  */
 function clearStaged() {
+  // While `merrymen` is still the file:.. symlink, INNER_NM is not ours at all:
+  // the path resolves THROUGH the symlink into the repo's own node_modules.
+  // Touching it here would delete the repo's dependencies. Unlink the symlink
+  // itself and stop — there is no inner junction yet to worry about.
+  if (isLink(STAGED)) {
+    removeLinkOrDir(STAGED);
+    return;
+  }
   removeLinkOrDir(INNER_NM);
   if (existsSync(INNER_NM) || isLink(INNER_NM)) die("inner node_modules link survived; refusing to recurse");
   removeLinkOrDir(STAGED, { allowRealDir: true });
@@ -141,8 +149,21 @@ if (existsSync(dist)) {
 const tmp = mkdtempSync(path.join(tmpdir(), "merrymen-stage-"));
 console.log("[stage] packing merrymen from the root `files` allowlist…");
 
-// npm pack runs prepublishOnly, which rebuilds web/.next and refuses on a broken
-// dashboard — so a bad build can't reach an installer either.
+/**
+ * Run the publish gate by hand, because `npm pack` will not.
+ *
+ * `prepublishOnly` fires only on `npm publish`. What pack runs is `prepare`
+ * (cli/build.mjs), and that hook deliberately SKIPS when .next already exists
+ * and exits 0 even when the build errors, so `npm install` never breaks. Net
+ * effect: pack alone will happily bundle a stale dashboard, or one clobbered by
+ * a `next dev` run — which is how 0.11.0 shipped a UI that could not start.
+ *
+ * The installer deserves the same guarantee the npm tarball gets, so invoke the
+ * real gate: it wipes .next, rebuilds clean, and exits non-zero on any gap.
+ */
+console.log("[stage] running the publish gate against the dashboard…");
+execFileSync(process.execPath, [path.join(ROOT, "cli", "prepublish.mjs")], { cwd: ROOT, stdio: "inherit" });
+
 const packed = npmRun(["pack", "--pack-destination", tmp], ROOT).split("\n").pop().trim();
 const tarball = path.join(tmp, packed);
 if (!existsSync(tarball)) die(`npm pack produced no tarball (got "${packed}")`);
@@ -175,7 +196,12 @@ if (leaked.length) die(`these must never ship and are in the bundle: ${leaked.jo
 for (const need of ["web", "worker", "packages", "cli", "node_modules"]) {
   if (!existsSync(path.join(STAGED, need))) die(`the app runs from ${need}/ and it isn't in the bundle`);
 }
-if (!existsSync(path.join(STAGED, "web", ".next", "BUILD_ID"))) die("bundled dashboard has no production build");
+// The same four files cli/prepublish.mjs checks. BUILD_ID alone is not enough:
+// a dev-mode run leaves some of these behind and drops others, so a bundle can
+// look built and still fail to serve.
+const NEXT_REQUIRED = ["BUILD_ID", "required-server-files.json", "prerender-manifest.json", "routes-manifest.json"];
+const missingNext = NEXT_REQUIRED.filter((f) => !existsSync(path.join(STAGED, "web", ".next", f)));
+if (missingNext.length) die(`bundled dashboard is incomplete — missing ${missingNext.join(", ")}`);
 if (!existsSync(path.join(STAGED, "worker", "src", "index.ts"))) die("bundled worker has no entry point");
 
 rmSync(tmp, { recursive: true, force: true });
