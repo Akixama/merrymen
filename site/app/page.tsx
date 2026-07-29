@@ -15,15 +15,17 @@ const GITHUB = "https://github.com/millw14/merrymen";
  * The Windows installer, pinned to an exact asset.
  *
  * Deliberately NOT a link to the releases page. Browsing releases is where
- * someone picks the wrong build: the older `desktopv0.16` tag is titled
- * "v-0.1.6" but carries the 0.1.4 binary, which predates the security fixes in
- * 0.1.5/0.1.6. Naming the file removes the choice.
+ * someone picks the wrong build — the empty `desktopv0.16` tag is still there,
+ * titled "v-0.1.6", and it once carried a pre-security-fix 0.1.4 binary that has
+ * since been pulled. Naming the exact file removes the choice.
  *
  * Bump all three together when a new desktop build ships — a stale version label
- * beside a fresh binary is worse than no label.
+ * beside a fresh binary is worse than no label. 0.1.7 is less than half the size
+ * of 0.1.6 because that build was packaging the previous installer inside itself;
+ * see desktop/stage-bundle.mjs.
  */
-const DESKTOP_VERSION = "0.1.6";
-const DESKTOP_SIZE = "260 MB";
+const DESKTOP_VERSION = "0.1.7";
+const DESKTOP_SIZE = "147 MB";
 const WINDOWS_DOWNLOAD = `${GITHUB}/releases/download/desktop-v${DESKTOP_VERSION}/merrymen.Setup.${DESKTOP_VERSION}.exe`;
 
 function Wordmark() {
@@ -87,9 +89,8 @@ export default function Home() {
               </Link>
             </span>
             {/* Deep-links the CURRENT installer, not the releases page. Browsing
-                releases is where someone picks the wrong one: the older
-                `desktopv0.16` tag is titled "v-0.1.6" but carries the 0.1.4
-                binary, which predates the security fixes. Naming the exact
+                releases is where someone picks the wrong one — the empty
+                `desktopv0.16` tag is still titled "v-0.1.6". Naming the exact
                 asset removes that choice. */}
             <a href={WINDOWS_DOWNLOAD} className="btn btn-ghost btn-lg">
               <Icon name="arrow" size={15} /> Download for Windows
