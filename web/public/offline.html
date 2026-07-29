@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Can't reach your merryman</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0; min-height: 100dvh; display: grid; place-items: center;
+        background: #0d1512; color: #e9f2ec; padding: 32px;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        line-height: 1.6; text-align: center;
+      }
+      .wrap { max-width: 46ch; }
+      h1 { font-size: 22px; margin: 0 0 14px; letter-spacing: -0.02em; }
+      p { color: #94a89e; font-size: 15px; margin: 0 0 12px; }
+      code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px; color: #e9f2ec; }
+      .note { color: #647a70; font-size: 13px; margin-top: 22px; }
+      button {
+        margin-top: 20px; padding: 11px 20px; border-radius: 8px; cursor: pointer;
+        background: #34d399; color: #08120e; border: 0; font: inherit; font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Can't reach your merryman</h1>
+      <p>
+        The dashboard is installed, but nothing answered. That usually means the agent isn't running,
+        or this device isn't on the same network as the machine it runs on.
+      </p>
+      <p>Start it with <code>merrymen start</code>, or open the desktop app.</p>
+      <button onclick="location.reload()">Try again</button>
+      <!-- Deliberately no cached numbers on this screen. A trading UI that shows
+           a remembered balance while offline is lying about the present. -->
+      <p class="note">
+        Nothing is shown from cache here on purpose — your balances and positions are only ever read
+        live, so an offline screen has no figures to give you rather than stale ones.
+      </p>
+    </div>
+  </body>
+</html>

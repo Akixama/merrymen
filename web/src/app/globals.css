@@ -1054,3 +1054,19 @@ button { font: inherit; cursor: pointer; }
 /* advanced disclosure + secondary chips inherit the softer type */
 .setup-look .settings-advanced > summary { font-family: var(--font-jbmono); }
 .setup-look .symbol-chip { border-radius: 8px; font-family: var(--font-jbmono); }
+
+/* ---------- installed-app (PWA) chrome ---------- */
+/* In standalone mode there is no browser UI, so the page runs edge to edge and
+   under the notch (viewport-fit=cover in layout.tsx). These pay that back. The
+   env() fallbacks are 0px, so nothing changes in a normal browser tab. */
+body {
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+@media (display-mode: standalone) {
+  /* No URL bar to pull-to-refresh against, and an accidental overscroll on a
+     trading screen looks like a crash. */
+  html, body { overscroll-behavior-y: contain; }
+}

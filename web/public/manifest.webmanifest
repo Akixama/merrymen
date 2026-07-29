@@ -1,0 +1,25 @@
+{
+  "name": "merrymen — your trading agent",
+  "short_name": "merrymen",
+  "description": "Watch and steer your merryman: equity, positions, trades, the on-chain permission wall, and the kill switch.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#0d1512",
+  "theme_color": "#0d1512",
+  "categories": ["finance", "productivity"],
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Settings", "url": "/settings" },
+    { "name": "Permission wall", "url": "/grant" },
+    { "name": "Scoreboard", "url": "/scoreboard" }
+  ]
+}
