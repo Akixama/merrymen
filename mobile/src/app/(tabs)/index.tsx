@@ -135,11 +135,18 @@ export default function Band() {
           </Text>
         }
         ListFooterComponent={
-          <Link href="/probe" asChild>
-            <Pressable style={styles.probeLink}>
-              <Text style={styles.probeText}>crypto probe →</Text>
-            </Pressable>
-          </Link>
+          <View style={styles.footerLinks}>
+            <Link href="/settings" asChild>
+              <Pressable style={styles.footerBtn}>
+                <Text style={styles.footerBtnText}>settings &amp; the wall</Text>
+              </Pressable>
+            </Link>
+            <Link href="/probe" asChild>
+              <Pressable style={styles.probeLink}>
+                <Text style={styles.probeText}>crypto probe →</Text>
+              </Pressable>
+            </Link>
+          </View>
         }
       />
     </View>
@@ -181,6 +188,17 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   empty: { color: C.dim, fontSize: 13, lineHeight: 20, paddingVertical: 18 },
-  probeLink: { paddingVertical: 18 },
+  footerLinks: { marginTop: 20, gap: 4 },
+  footerBtn: {
+    backgroundColor: C.bg2,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: 10,
+    minHeight: 48,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  footerBtnText: { color: C.text2, fontSize: 14 },
+  probeLink: { minHeight: 44, justifyContent: "center" },
   probeText: { color: C.faint, fontSize: 12 },
 });

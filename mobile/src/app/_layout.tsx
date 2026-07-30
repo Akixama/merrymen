@@ -5,19 +5,18 @@
 import '../../polyfills';
 
 import { useEffect } from 'react';
-import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router';
+import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useColorScheme } from 'react-native';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
-import AppTabs from '@/components/app-tabs';
 import { useFeedPoller } from '@/net/poller';
 import { warmCurve } from '@/crypto/warmup';
 import { useOwnerGate } from '@/crypto/useOwnerGate';
 
 SplashScreen.preventAutoHideAsync();
 
-export default function TabLayout() {
+export default function RootLayout() {
   const colorScheme = useColorScheme();
 
   // Route by key state before anything else matters: no key -> onboarding, key
@@ -40,7 +39,20 @@ export default function TabLayout() {
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <AnimatedSplashOverlay />
-      <AppTabs />
+      {/* A Stack at the root, with the tab bar as ONE of its screens. Settings,
+          the probe, recovery and onboarding are pushed over the tabs rather than
+          living inside them — which is what lets them exist without each needing
+          a tab trigger. */}
+      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#0d1512' } }}>
+        <Stack.Screen name="(tabs)" />
+        <Stack.Screen name="settings" options={{ presentation: 'modal', headerShown: false }} />
+        <Stack.Screen name="probe" options={{ presentation: 'modal' }} />
+        {/* Recovery is not dismissable by gesture: it is reached only when the key
+            is already gone, and swiping past it lands on a dashboard that cannot
+            work. */}
+        <Stack.Screen name="recover" options={{ gestureEnabled: false }} />
+        <Stack.Screen name="onboarding" options={{ gestureEnabled: false }} />
+      </Stack>
     </ThemeProvider>
   );
 }
