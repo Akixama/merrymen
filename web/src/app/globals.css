@@ -108,7 +108,11 @@ button { font: inherit; cursor: pointer; }
   max-width: 1400px;
   margin: 0 auto;
 }
-@media (max-width: 980px) { .shell { grid-template-columns: 1fr; } }
+/* minmax(0, …) not 1fr. A bare `1fr` means `minmax(auto, 1fr)`, and that `auto`
+   minimum refuses to shrink below the track's min-content width — so one long
+   address, or a card with a wide row in it, silently forces the whole grid past
+   the viewport. This was most of the dashboard's 413px of mobile overflow. */
+@media (max-width: 980px) { .shell { grid-template-columns: minmax(0, 1fr); } }
 
 .section-title {
   font-family: var(--sans);
@@ -1069,4 +1073,81 @@ body {
   /* No URL bar to pull-to-refresh against, and an accidental overscroll on a
      trading screen looks like a crash. */
   html, body { overscroll-behavior-y: contain; }
+}
+
+/* ---------- phones ---------- */
+/* The dashboard was built as a desktop trading terminal and had three media
+   queries. Installed as a PWA it has to work at 375px, where it previously
+   overflowed by 413px — the page was 2.1x the width of the screen. The topbar is
+   the main culprit: seven children in one nowrap flex row. */
+
+@media (max-width: 760px) {
+  /* Let the topbar become as many rows as it needs instead of one long one —
+     and then STOP it being sticky. Wrapped, it's ~150px tall; pinned to the top
+     of an 812px phone that's 18% of the screen permanently spent on navigation.
+     It carries links and a CTA, not live state (the statusbar has that), so it
+     scrolls away and gives the height back to the data. */
+  .topbar {
+    height: auto;
+    position: static;
+    flex-wrap: wrap;
+    row-gap: 8px;
+    column-gap: 10px;
+    padding: 10px 14px;
+  }
+  /* First claim on the row goes to identity and the primary action; everything
+     else wraps beneath. The tagline is charm, not information — it's the first
+     thing to go when there are 375 pixels to spend. */
+  .brand { flex: 1 1 auto; font-size: 16px; }
+  .brand .tagline { display: none; }
+  .connect-btn { order: 2; }
+  .chain-pill, .topstats, .tg-pill { order: 3; }
+
+  /* margin-left:auto pushes to the far right of a row that no longer exists. */
+  .topstats { margin-left: 0; gap: 12px; flex-wrap: wrap; }
+  .statusbar > span:last-child { margin-left: 0; }
+
+  .shell { padding: 12px; gap: 12px; }
+  /* minmax(320px, 1fr) can't fit inside 375px minus padding, and a grid track
+     wider than its container is exactly how a page ends up 2x too wide. Same
+     minmax(0, …) reasoning as .shell above — `1fr` alone would still refuse to
+     shrink below the widest card's content. */
+  .agent-grid { grid-template-columns: minmax(0, 1fr); }
+  .settings-panel { max-width: 100%; }
+
+  /* Addresses and tx hashes are long, unbreakable strings. Left alone they set
+     the page width all by themselves. */
+  .mono { overflow-wrap: anywhere; }
+
+  /* /settings and /grant share this shell, and it had the SAME minmax trap: the
+     shell measured 375px while its single track measured 609px. Panel padding of
+     42px a side and a two-column field grid did the rest. */
+  .grant-shell { grid-template-columns: minmax(0, 1fr); padding: 12px; }
+  .grant-panel { max-width: 100%; padding: 20px 16px 18px; border-radius: 12px; }
+  .grant-fields { grid-template-columns: minmax(0, 1fr); }
+  /* The last field spanned both columns; with one column that span is a no-op
+     that leaves an empty track behind it. */
+  .grant-fields .field:last-child { grid-column: auto; }
+  .grant-title { font-size: 17px; }
+
+  /* Touch targets. Deliberately scoped to real CONTROLS — bumping every inline
+     text link to 44px would leave gaping holes in running prose. */
+  button,
+  .connect-btn,
+  .tg-pill,
+  input,
+  select {
+    min-height: 44px;
+  }
+  /* …and these are laid out as rows, so they need the height to land as padding
+     rather than stretching a flex child. */
+  .connect-btn, .tg-pill { display: inline-flex; align-items: center; }
+}
+
+@media (max-width: 420px) {
+  /* At the narrow end, the chain pill's full label is the last thing pushing the
+     header wide. Keep the live dot and the chain id, drop the prose. */
+  .chain-pill { font-size: 10px; padding: 2px 8px; }
+  .topstats { font-size: 10px; gap: 10px; }
+  .shell { padding: 10px; }
 }
