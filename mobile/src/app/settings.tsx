@@ -158,6 +158,11 @@ export default function Settings() {
         <Bullet text={`The expiry already signed into the key — ${grant ? countdown(left) : "no key yet"}. It dies on schedule whether or not anyone intervenes.`} />
         <Bullet text="The kill switch in the dashboard, which reaches the worker directly because it runs beside it." />
         <Bullet text="Moving the funds out with your recovery phrase. The owner key is the only signer that can, and it is not bound by the caps." />
+        {/* The one action in this list the app CAN perform, so it gets a button
+            rather than being described and left to the reader to find. */}
+        <Pressable style={styles.action} onPress={() => router.push("/recover")}>
+          <Text style={styles.actionText}>Sweep the account to a wallet I control</Text>
+        </Pressable>
       </View>
 
       {/* ── recovery phrase ──────────────────────────────────────────────── */}

@@ -21,10 +21,24 @@ const base = config.resolver.resolveRequest;
  * outside the project root without it.
  */
 const CORE = path.resolve(__dirname, "..", "packages", "core");
-config.watchFolders = [...(config.watchFolders ?? []), CORE];
+const WORKER = path.resolve(__dirname, "..", "worker");
+config.watchFolders = [...(config.watchFolders ?? []), CORE, WORKER];
 config.resolver.extraNodeModules = {
   ...config.resolver.extraNodeModules,
   "@merrymen/core": path.join(CORE, "src"),
+  /**
+   * Fund recovery, shared rather than reimplemented.
+   *
+   * worker/src/recover.ts rebuilds the smart account with the OWNER key as sudo
+   * signer and sweeps it — the only path that works once a session key is gone or
+   * expired. The dashboard already reaches it through this exact alias name (see
+   * web/tsconfig.json), so the phone uses the same file rather than a second
+   * implementation of the one operation that moves everything at once.
+   *
+   * It only pulls viem, @zerodev/* and packages/core, all of which bundle fine —
+   * no node built-ins.
+   */
+  "@merrymen/recover": path.join(WORKER, "src", "recover.ts"),
 };
 
 /**

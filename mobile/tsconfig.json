@@ -17,6 +17,9 @@
       ],
       "viem/*": [
         "./node_modules/viem/*"
+      ],
+      "@merrymen/recover": [
+        "../worker/src/recover.ts"
       ]
     }
   },

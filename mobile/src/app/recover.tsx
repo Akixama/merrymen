@@ -1,29 +1,60 @@
-import { useCallback, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { useCallback, useEffect, useState } from "react";
+import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { router } from "expo-router";
-import { accountFromMnemonic, validateMnemonic } from "@/crypto/mnemonic";
-import { forgetOwner, writeOwner } from "@/crypto/keystore";
+import { formatEther, isAddress, type Address } from "viem";
+import { robinhoodChain } from "@merrymen/core";
+import { planRecovery, recoverFunds, type RecoverPlan } from "@merrymen/recover";
+import { accountFromMnemonic, privateKeyFromMnemonic, validateMnemonic } from "@/crypto/mnemonic";
+import { forgetOwner, readOwner, writeOwner } from "@/crypto/keystore";
+import { readGrant } from "@/crypto/grantStore";
+import { EXPLORER, RPC_URL } from "@/net/chainlinks";
 import { C } from "@/ui/tokens";
 
 /**
- * "Your key is gone" — the screen that exists so the app never silently replaces
- * a key that controls money.
+ * Recovery — restore the key, then sweep the account back to a wallet you control.
  *
- * Reached when the keystore's marker is present but the secret reads back null.
- * On Android that specifically means the OS destroyed the key because biometric
- * enrolment changed — the module catches KeyPermanentlyInvalidatedException and
- * returns null, which is indistinguishable from "nothing stored" unless something
- * else remembers. Without this screen the app would conclude "first run", generate
- * a fresh key, and quietly strand a funded smart account forever.
+ * Reached when the keystore's marker survives but the secret does not, which on
+ * Android means the OS destroyed the key because biometric enrolment changed. The
+ * module catches that and returns null, indistinguishable from "nothing stored"
+ * unless something else remembers — hence the marker. Without this screen the app
+ * would decide "first run", generate a fresh key, and strand a funded account.
  *
- * There is exactly one way out and it is the recovery phrase, because per
- * worker/src/recover.ts the owner key is the only signer that can sweep the
- * account. Saying that plainly is kinder than implying support can help.
+ * The sweep uses worker/src/recover.ts, the same code the CLI and the dashboard
+ * run, because this is the operation that moves EVERYTHING at once and a second
+ * implementation of it is the last thing anyone needs. It rebuilds the account
+ * with the owner key as sudo signer, so it is not bound by the session key's caps
+ * — that is the point, and it is also why the confirmation below is deliberate
+ * rather than a single tap.
  */
+
+type Stage = "restore" | "plan" | "sent";
+
 export default function Recover() {
+  const [stage, setStage] = useState<Stage>("restore");
   const [phrase, setPhrase] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  const [plan, setPlan] = useState<RecoverPlan | null>(null);
+  const [expected, setExpected] = useState<Address | null>(null);
+  const [to, setTo] = useState("");
+  const [bundler, setBundler] = useState("");
+  const [txHash, setTxHash] = useState<string | null>(null);
+
+  // If a grant is still on the device we know which account the phrase SHOULD
+  // control, which turns "wrong key" from a confusing empty sweep into a clear
+  // mismatch error before anything is signed.
+  useEffect(() => {
+    void (async () => {
+      const g = await readGrant();
+      if (g) setExpected(g.smartAccount as Address);
+      const owner = await readOwner();
+      // Already holding a key? Skip straight to planning — this screen is also
+      // reachable from settings for a deliberate sweep, not only after a loss.
+      if (owner.state === "present") setStage("plan");
+    })();
+  }, []);
 
   const restore = useCallback(async () => {
     const check = validateMnemonic(phrase);
@@ -34,7 +65,9 @@ export default function Recover() {
     setBusy(true);
     try {
       await writeOwner(check.mnemonic);
-      router.replace("/");
+      setPhrase("");
+      setError(null);
+      setStage("plan");
     } catch {
       setError("Couldn't save to the keychain. Try again.");
     } finally {
@@ -42,76 +75,273 @@ export default function Recover() {
     }
   }, [phrase]);
 
-  const preview = (() => {
-    const check = validateMnemonic(phrase);
-    if (!check.ok) return null;
+  const doPlan = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    setNote("reading the account…");
     try {
-      return accountFromMnemonic(check.mnemonic).address;
-    } catch {
-      return null;
+      const owner = await readOwner();
+      if (owner.state !== "present") {
+        setError("No key on this device. Enter your recovery phrase first.");
+        setStage("restore");
+        return;
+      }
+      const p = await planRecovery({
+        chain: robinhoodChain,
+        ownerPrivateKey: privateKeyFromMnemonic(owner.mnemonic),
+        rpcUrl: RPC_URL,
+        // Throws a clear "this key controls X, not Y" rather than sweeping the
+        // wrong (probably empty) account.
+        expectedSmartAccount: expected ?? undefined,
+      });
+      setPlan(p);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't read the account.");
+    } finally {
+      setBusy(false);
+      setNote(null);
     }
-  })();
+  }, [expected]);
+
+  const sweep = useCallback(async () => {
+    if (!plan) return;
+    if (!isAddress(to)) {
+      setError("Enter the address you want the funds sent to.");
+      return;
+    }
+    if (!bundler.startsWith("http")) {
+      setError("A bundler URL is required — a smart account cannot move funds without one.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setNote("signing and submitting…");
+    try {
+      const owner = await readOwner();
+      if (owner.state !== "present") throw new Error("key unavailable");
+      const res = await recoverFunds({
+        chain: robinhoodChain,
+        ownerPrivateKey: privateKeyFromMnemonic(owner.mnemonic),
+        rpcUrl: RPC_URL,
+        bundlerUrl: bundler.trim(),
+        to: to as Address,
+      });
+      setTxHash(res.txHash);
+      setStage("sent");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "The sweep failed.");
+    } finally {
+      setBusy(false);
+      setNote(null);
+    }
+  }, [plan, to, bundler]);
+
+  const hasBalances = (plan?.balances.length ?? 0) > 0;
+  const noGas = plan ? plan.gasWei === 0n : false;
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-      <Text style={styles.h1}>This device lost its key</Text>
-      <Text style={styles.lede}>
-        The key was stored here, and the phone&apos;s keystore no longer has it. That normally happens when the
-        device&apos;s fingerprint or face setup changed, which wipes anything locked to it.
-      </Text>
-      <Text style={styles.lede}>
-        <Text style={styles.strong}>Your funds are fine.</Text> They live in the smart account on-chain, not on
-        this phone. Enter your recovery phrase to take control of it again.
-      </Text>
+      {stage === "restore" && (
+        <>
+          <Text style={styles.h1}>This device lost its key</Text>
+          <Text style={styles.lede}>
+            The key was stored here and the phone&apos;s keystore no longer has it. That normally happens when
+            the fingerprint or face setup changed, which wipes anything locked to it.
+          </Text>
+          <Text style={styles.lede}>
+            <Text style={styles.strong}>Your funds are fine.</Text> They are in the smart account on-chain, not
+            on this phone.
+          </Text>
 
-      <Text style={styles.label}>Recovery phrase</Text>
-      <TextInput
-        style={styles.input}
-        value={phrase}
-        onChangeText={(t) => {
-          setPhrase(t);
-          setError(null);
-        }}
-        placeholder="twelve words, separated by spaces"
-        placeholderTextColor={C.faint}
-        multiline
-        autoCapitalize="none"
-        autoCorrect={false}
-        autoComplete="off"
-        spellCheck={false}
-        textContentType="none"
-      />
-      {preview && (
-        <Text style={styles.preview}>
-          owner address <Text style={styles.previewAddr}>{preview}</Text>
-        </Text>
+          <Text style={styles.label}>Recovery phrase</Text>
+          <TextInput
+            style={styles.input}
+            value={phrase}
+            onChangeText={(t) => {
+              setPhrase(t);
+              setError(null);
+            }}
+            placeholder="twelve words, separated by spaces"
+            placeholderTextColor={C.faint}
+            multiline
+            autoCapitalize="none"
+            autoCorrect={false}
+            autoComplete="off"
+            spellCheck={false}
+            textContentType="none"
+          />
+          {(() => {
+            const c = validateMnemonic(phrase);
+            return c.ok ? (
+              <Text style={styles.preview}>owner {accountFromMnemonic(c.mnemonic).address}</Text>
+            ) : null;
+          })()}
+          {error && <Text style={styles.error}>{error}</Text>}
+
+          <Pressable style={styles.primary} disabled={busy} onPress={restore}>
+            {busy ? <ActivityIndicator color="#08120e" /> : <Text style={styles.primaryText}>Restore my key</Text>}
+          </Pressable>
+
+          <View style={styles.divider} />
+          <Text style={styles.smallHead}>If you don&apos;t have the phrase</Text>
+          <Text style={styles.small}>
+            Then this account cannot be recovered — not by us, not by anyone. The owner key is the only signer
+            that can move funds out, and it existed only on this device and on your written copy.
+          </Text>
+          <Pressable
+            style={styles.danger}
+            onPress={async () => {
+              await forgetOwner();
+              router.replace("/onboarding");
+            }}
+          >
+            <Text style={styles.dangerText}>Forget this account and start fresh</Text>
+          </Pressable>
+        </>
       )}
-      {error && <Text style={styles.error}>{error}</Text>}
 
-      <Pressable style={styles.primary} disabled={busy} onPress={restore}>
-        {busy ? <ActivityIndicator color="#08120e" /> : <Text style={styles.primaryText}>Restore my key</Text>}
-      </Pressable>
+      {stage === "plan" && (
+        <>
+          <Text style={styles.h1}>Sweep the account</Text>
+          <Text style={styles.lede}>
+            This moves every token out of your smart account to an address you choose, signed by your owner key.
+            It is <Text style={styles.strong}>not</Text> bound by the caps your agent trades under — that is
+            what makes it work when a session key is gone or expired.
+          </Text>
 
-      <View style={styles.divider} />
+          {!plan ? (
+            <Pressable style={styles.primary} disabled={busy} onPress={doPlan}>
+              {busy ? (
+                <View style={styles.busyRow}>
+                  <ActivityIndicator color="#08120e" />
+                  <Text style={styles.primaryText}>{note ?? "reading…"}</Text>
+                </View>
+              ) : (
+                <Text style={styles.primaryText}>Check what&apos;s in the account</Text>
+              )}
+            </Pressable>
+          ) : (
+            <>
+              <View style={styles.card}>
+                <Text style={styles.cardLabel}>smart account</Text>
+                <Text style={styles.cardAddr}>{plan.smartAccount}</Text>
+                <Text style={styles.cardLabel}>holds</Text>
+                {hasBalances ? (
+                  plan.balances.map((b) => (
+                    <View key={b.address} style={styles.balRow}>
+                      <Text style={styles.balSym}>{b.symbol}</Text>
+                      <Text style={styles.balAmt}>{b.amount}</Text>
+                    </View>
+                  ))
+                ) : (
+                  <Text style={styles.muted}>Nothing to sweep — every token balance is zero.</Text>
+                )}
+                <View style={styles.balRow}>
+                  <Text style={styles.balSymDim}>ETH (gas)</Text>
+                  <Text style={[styles.balAmt, noGas && { color: C.red }]}>{formatEther(plan.gasWei)}</Text>
+                </View>
+              </View>
 
-      <Text style={styles.smallHead}>If you don&apos;t have the phrase</Text>
-      <Text style={styles.small}>
-        Then this account cannot be recovered — not by us, not by anyone. The owner key is the only signer that
-        can move funds out, and it existed only on this device and on your written copy. We would rather say
-        that plainly than let you keep trying.
-      </Text>
+              {/* Two things people get wrong here, so both are said before the
+                  button rather than discovered after a failed transaction. */}
+              <Text style={styles.warnText}>
+                The sweep moves tokens only. The ETH above pays for the transaction and stays behind.
+              </Text>
+              {noGas && (
+                <Text style={styles.errorBox}>
+                  This account has no ETH, so it cannot pay for its own recovery. Send a small amount of ETH to
+                  the address above first, then come back.
+                </Text>
+              )}
 
-      {/* Starting over is a real choice, but it must be an explicit one that names
-          what it costs — not a convenient escape from an error screen. */}
-      <Pressable
-        style={styles.danger}
-        onPress={async () => {
-          await forgetOwner();
-          router.replace("/onboarding");
-        }}
-      >
-        <Text style={styles.dangerText}>Forget this account and start fresh</Text>
-      </Pressable>
+              {hasBalances && (
+                <>
+                  <Text style={styles.label}>Send everything to</Text>
+                  <TextInput
+                    style={styles.inputOne}
+                    value={to}
+                    onChangeText={(t) => {
+                      setTo(t);
+                      setError(null);
+                    }}
+                    placeholder="0x… a wallet you control"
+                    placeholderTextColor={C.faint}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    spellCheck={false}
+                  />
+                  <Text style={styles.hint}>
+                    Use a normal wallet address you can already access — not this smart account, and not an
+                    exchange deposit address unless you are certain it accepts this chain.
+                  </Text>
+
+                  <Text style={styles.label}>Bundler URL</Text>
+                  <TextInput
+                    style={styles.inputOne}
+                    value={bundler}
+                    onChangeText={(t) => {
+                      setBundler(t);
+                      setError(null);
+                    }}
+                    placeholder="https://api.pimlico.io/v2/4663/rpc?apikey=…"
+                    placeholderTextColor={C.faint}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    spellCheck={false}
+                  />
+                  <Text style={styles.hint}>
+                    A smart account cannot send a transaction by itself — a bundler submits it. This app has no
+                    key of its own, so paste one from your dashboard settings or from pimlico.io.
+                  </Text>
+
+                  {error && <Text style={styles.error}>{error}</Text>}
+
+                  <Pressable
+                    style={[styles.dangerSolid, (busy || noGas) && styles.primaryOff]}
+                    disabled={busy || noGas}
+                    onPress={sweep}
+                  >
+                    {busy ? (
+                      <View style={styles.busyRow}>
+                        <ActivityIndicator color="#2a0a10" />
+                        <Text style={styles.dangerSolidText}>{note ?? "working…"}</Text>
+                      </View>
+                    ) : (
+                      <Text style={styles.dangerSolidText}>Sweep everything — this cannot be undone</Text>
+                    )}
+                  </Pressable>
+                </>
+              )}
+
+              {error && !hasBalances && <Text style={styles.error}>{error}</Text>}
+
+              <Pressable style={styles.ghost} onPress={() => router.replace("/")}>
+                <Text style={styles.ghostText}>back to the dashboard</Text>
+              </Pressable>
+            </>
+          )}
+
+          {error && !plan && <Text style={styles.error}>{error}</Text>}
+        </>
+      )}
+
+      {stage === "sent" && (
+        <>
+          <Text style={styles.h1}>Swept</Text>
+          <Text style={styles.lede}>
+            Everything the account held has been sent to {to}. The transaction is on-chain — check it yourself
+            rather than taking our word for it.
+          </Text>
+          {txHash && (
+            <Pressable style={styles.primary} onPress={() => Linking.openURL(`${EXPLORER}/tx/${txHash}`)}>
+              <Text style={styles.primaryText}>View the receipt</Text>
+            </Pressable>
+          )}
+          <Pressable style={styles.ghost} onPress={() => router.replace("/")}>
+            <Text style={styles.ghostText}>done</Text>
+          </Pressable>
+        </>
+      )}
     </ScrollView>
   );
 }
@@ -122,7 +352,7 @@ const styles = StyleSheet.create({
   h1: { color: C.text, fontSize: 27, fontWeight: "700", letterSpacing: -0.5 },
   lede: { color: C.dim, fontSize: 15, lineHeight: 22 },
   strong: { color: C.green, fontWeight: "700" },
-  label: { color: C.faint, fontSize: 11, textTransform: "uppercase", letterSpacing: 1, marginTop: 10 },
+  label: { color: C.faint, fontSize: 11, textTransform: "uppercase", letterSpacing: 1, marginTop: 12 },
   input: {
     backgroundColor: C.bg2,
     borderWidth: 1,
@@ -134,18 +364,59 @@ const styles = StyleSheet.create({
     fontSize: 15,
     textAlignVertical: "top",
   },
+  inputOne: {
+    backgroundColor: C.bg2,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: 12,
+    color: C.text,
+    padding: 14,
+    minHeight: 48,
+    fontSize: 14,
+  },
+  hint: { color: C.faint, fontSize: 12, lineHeight: 18 },
   preview: { color: C.dim, fontSize: 12 },
-  previewAddr: { color: C.text2 },
   error: { color: C.red, fontSize: 13, lineHeight: 19 },
+  errorBox: {
+    color: C.red,
+    fontSize: 13,
+    lineHeight: 19,
+    backgroundColor: "rgba(251,113,133,0.10)",
+    borderColor: "rgba(251,113,133,0.30)",
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
+  },
+  warnText: { color: C.gold, fontSize: 12.5, lineHeight: 19 },
+  card: { backgroundColor: C.bg2, borderRadius: 12, padding: 14, gap: 8 },
+  cardLabel: { color: C.faint, fontSize: 11, textTransform: "uppercase", letterSpacing: 1 },
+  cardAddr: { color: C.text2, fontSize: 12 },
+  balRow: { flexDirection: "row", justifyContent: "space-between", gap: 12 },
+  balSym: { color: C.text, fontSize: 14, fontWeight: "600" },
+  balSymDim: { color: C.dim, fontSize: 13 },
+  balAmt: { color: C.text, fontSize: 14, fontVariant: ["tabular-nums"] },
+  muted: { color: C.faint, fontSize: 13 },
   primary: {
     backgroundColor: C.green,
     borderRadius: 12,
     minHeight: 52,
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 6,
+    marginTop: 8,
   },
+  primaryOff: { opacity: 0.45 },
   primaryText: { color: "#08120e", fontSize: 16, fontWeight: "700" },
+  busyRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  dangerSolid: {
+    backgroundColor: C.red,
+    borderRadius: 12,
+    minHeight: 54,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 10,
+    paddingHorizontal: 16,
+  },
+  dangerSolidText: { color: "#2a0a10", fontSize: 15, fontWeight: "700", textAlign: "center" },
   divider: { height: 1, backgroundColor: C.border, marginVertical: 18 },
   smallHead: { color: C.text2, fontSize: 14, fontWeight: "600" },
   small: { color: C.faint, fontSize: 13, lineHeight: 20 },
@@ -159,4 +430,6 @@ const styles = StyleSheet.create({
     borderColor: "rgba(251,113,133,0.35)",
   },
   dangerText: { color: C.red, fontSize: 14 },
+  ghost: { minHeight: 44, alignItems: "center", justifyContent: "center", marginTop: 8 },
+  ghostText: { color: C.faint, fontSize: 13 },
 });

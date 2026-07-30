@@ -21,6 +21,24 @@ export function accountFromMnemonic(mnemonic: string): HDAccount {
   return mnemonicToAccount(mnemonic);
 }
 
+/**
+ * The raw owner private key, for the one caller that genuinely needs it.
+ *
+ * Signing a grant does NOT need this — an HDAccount signs perfectly well on its
+ * own — but the recovery path does, because planRecovery/recoverFunds take a key
+ * directly. Kept as a separate, obviously-named function rather than folded into
+ * accountFromMnemonic so that anything handling raw key BYTES is greppable, and
+ * so nobody reaches for it casually. Never log, store or transmit the result.
+ */
+export function privateKeyFromMnemonic(mnemonic: string): `0x${string}` {
+  const hd = mnemonicToAccount(mnemonic).getHdKey();
+  if (!hd.privateKey) throw new Error("could not derive a private key from this phrase");
+  const hex = Array.from(hd.privateKey)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  return `0x${hex}`;
+}
+
 const WORDS = new Set(english);
 
 /**
