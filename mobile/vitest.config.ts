@@ -15,7 +15,10 @@ import { defineConfig } from "vitest/config";
  */
 export default defineConfig({
   resolve: {
-    alias: { "@": path.resolve(__dirname, "src") },
+    alias: {
+      "@": path.resolve(__dirname, "src"),
+      "@merrymen/core": path.resolve(__dirname, "..", "packages", "core", "src", "index.ts"),
+    },
   },
   test: {
     environment: "node",

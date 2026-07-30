@@ -8,6 +8,9 @@
       ],
       "@/assets/*": [
         "./assets/*"
+      ],
+      "@merrymen/core": [
+        "../packages/core/src/index.ts"
       ]
     }
   },

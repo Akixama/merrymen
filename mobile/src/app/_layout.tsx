@@ -13,11 +13,17 @@ import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import AppTabs from '@/components/app-tabs';
 import { useFeedPoller } from '@/net/poller';
 import { warmCurve } from '@/crypto/warmup';
+import { useOwnerGate } from '@/crypto/useOwnerGate';
 
 SplashScreen.preventAutoHideAsync();
 
 export default function TabLayout() {
   const colorScheme = useColorScheme();
+
+  // Route by key state before anything else matters: no key -> onboarding, key
+  // destroyed by the OS -> recovery (never onboarding, which would generate a new
+  // key over a funded account).
+  useOwnerGate();
 
   // ONE poller for the whole app, mounted here so it exists exactly once. Screens
   // read the store and never fetch — two screens each running the same hook would

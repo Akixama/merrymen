@@ -1,0 +1,245 @@
+import { useEffect, useState } from "react";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { router } from "expo-router";
+// A VALUE import, not just a type. The tradeable set is read from the shared core
+// package so the wall lists what the key may actually touch — and because a
+// type-only import would be erased at compile time, leaving the Metro alias for
+// @merrymen/core configured but never exercised, which is the same as untested.
+import { TRADEABLE_SYMBOLS, type GrantCaps } from "@merrymen/core";
+import { accountFromMnemonic } from "@/crypto/mnemonic";
+import { readOwner } from "@/crypto/keystore";
+import { C } from "@/ui/tokens";
+
+/**
+ * The permission wall — what the agent will be allowed to do, before it can.
+ *
+ * This screen's job is comprehension, not decoration. The caps below are not
+ * settings the app enforces politely; once signed they are conditions inside the
+ * account contract, and a fully compromised agent still cannot exceed them. That
+ * is the entire product, so the screen says it in plain words rather than showing
+ * five sliders and hoping.
+ *
+ * Presets and values are the same three the dashboard offers, so a person who set
+ * up on desktop sees the same choices here.
+ */
+
+const PRESETS: { id: string; label: string; blurb: string; caps: GrantCaps }[] = [
+  {
+    id: "scout",
+    label: "cautious · the scout",
+    blurb: "dip a toe — tiny trades, tight leash",
+    caps: { perTradeUsdg: 10, dailyUsdg: 50, expiryDays: 7, maxDrawdownPct: 5, maxOpsPerDay: 24 },
+  },
+  {
+    id: "outlaw",
+    label: "balanced · the outlaw",
+    blurb: "the sensible default",
+    caps: { perTradeUsdg: 50, dailyUsdg: 500, expiryDays: 14, maxDrawdownPct: 10, maxOpsPerDay: 48 },
+  },
+  {
+    id: "warlord",
+    label: "bold · the warlord",
+    blurb: "bigger arrows, wider walls",
+    caps: { perTradeUsdg: 200, dailyUsdg: 2000, expiryDays: 30, maxDrawdownPct: 15, maxOpsPerDay: 96 },
+  },
+];
+
+export default function Grant() {
+  const [preset, setPreset] = useState(PRESETS[1]);
+  const [owner, setOwner] = useState<string | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      const status = await readOwner();
+      if (status.state === "present") {
+        try {
+          setOwner(accountFromMnemonic(status.mnemonic).address);
+        } catch {
+          setOwner(null);
+        }
+      }
+    })();
+  }, []);
+
+  const caps = preset.caps;
+
+  return (
+    <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+      <Text style={styles.h1}>The permission wall</Text>
+      <Text style={styles.lede}>
+        You&apos;re about to give your agent a key that can trade — and only trade, inside these limits. The
+        limits live in the account contract on-chain, not in this app, so even a completely compromised agent
+        cannot spend past them.
+      </Text>
+
+      <Text style={styles.section}>temperament</Text>
+      {PRESETS.map((p) => {
+        const on = p.id === preset.id;
+        return (
+          <Pressable key={p.id} style={[styles.preset, on && styles.presetOn]} onPress={() => setPreset(p)}>
+            <View style={styles.presetHead}>
+              <Text style={[styles.presetLabel, on && styles.presetLabelOn]}>{p.label}</Text>
+              {on && <Text style={styles.check}>✓</Text>}
+            </View>
+            <Text style={styles.presetBlurb}>{p.blurb}</Text>
+          </Pressable>
+        );
+      })}
+
+      <Text style={styles.section}>what it may do</Text>
+      <View style={styles.caps}>
+        <Cap label="most per trade" value={`${caps.perTradeUsdg} USDG`} />
+        <Cap label="most per day" value={`${caps.dailyUsdg} USDG`} />
+        <Cap label="trades per day" value={`${caps.maxOpsPerDay}`} />
+        <Cap label="key expires in" value={`${caps.expiryDays} days`} />
+        <Cap label="stops out at" value={`−${caps.maxDrawdownPct}% drawdown`} />
+      </View>
+
+      <Text style={styles.section}>what it may trade</Text>
+      <View style={styles.symbols}>
+        {TRADEABLE_SYMBOLS.map((s) => (
+          <Text key={s} style={styles.symbol}>
+            {s}
+          </Text>
+        ))}
+      </View>
+      <Text style={styles.symbolNote}>
+        {TRADEABLE_SYMBOLS.length} assets, read from the same registry the worker uses. Anything not on this
+        list needs a new wall, signed by you.
+      </Text>
+
+      <Text style={styles.section}>what it may never do</Text>
+      <View style={styles.nevers}>
+        <Never text="Move funds to an address you didn't approve — transfers are capped per call on-chain and need your explicit confirmation." />
+        <Never text="Trade an asset outside the allowed list. Adding one means signing a new wall, which is why it can't widen by itself." />
+        <Never text="Outlive its expiry. The key dies on schedule even if every other control fails." />
+        <Never text="Touch your recovery phrase. It never leaves this phone — not to us, not to the agent, not over the network." />
+      </View>
+
+      {owner && (
+        <View style={styles.ownerBox}>
+          <Text style={styles.ownerLabel}>signing as</Text>
+          <Text style={styles.ownerAddr}>{owner}</Text>
+        </View>
+      )}
+
+      {/* Deliberately not wired to a signer yet, and saying so beats a button that
+          quietly produces a weaker grant than the desktop one. See the note. */}
+      <View style={styles.blocked}>
+        <Text style={styles.blockedTitle}>Signing isn&apos;t wired up yet</Text>
+        <Text style={styles.blockedText}>
+          The caps above are real, but the part that decides <Text style={styles.em}>which assets and which
+          routers</Text> the key may touch lives in the dashboard&apos;s grant code. Re-typing it here would
+          create a second definition of the wall that could drift from the first without anything failing — so
+          it gets shared, not copied. Until then this screen shows the wall; it doesn&apos;t sign it.
+        </Text>
+      </View>
+
+      <Pressable style={styles.secondary} onPress={() => router.replace("/")}>
+        <Text style={styles.secondaryText}>Continue to the dashboard</Text>
+      </Pressable>
+    </ScrollView>
+  );
+}
+
+function Cap({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.capRow}>
+      <Text style={styles.capLabel}>{label}</Text>
+      <Text style={styles.capValue}>{value}</Text>
+    </View>
+  );
+}
+
+function Never({ text }: { text: string }) {
+  return (
+    <View style={styles.neverRow}>
+      <Text style={styles.neverMark}>✕</Text>
+      <Text style={styles.neverText}>{text}</Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: C.bg },
+  content: { padding: 24, paddingTop: 72, paddingBottom: 60, gap: 12 },
+  h1: { color: C.text, fontSize: 28, fontWeight: "700", letterSpacing: -0.5 },
+  lede: { color: C.dim, fontSize: 15, lineHeight: 22 },
+  section: {
+    color: C.faint,
+    fontSize: 11,
+    textTransform: "uppercase",
+    letterSpacing: 1.3,
+    marginTop: 18,
+  },
+  preset: {
+    backgroundColor: C.bg2,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: 12,
+    padding: 14,
+    gap: 4,
+    minHeight: 60,
+  },
+  presetOn: { borderColor: C.green, backgroundColor: "rgba(52,211,153,0.10)" },
+  presetHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  presetLabel: { color: C.text2, fontSize: 15, fontWeight: "600" },
+  presetLabelOn: { color: C.green },
+  presetBlurb: { color: C.faint, fontSize: 12.5 },
+  check: { color: C.green, fontSize: 15 },
+  caps: { backgroundColor: C.bg2, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 4 },
+  capRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 11,
+    borderBottomWidth: 1,
+    borderBottomColor: C.border,
+    gap: 12,
+  },
+  capLabel: { color: C.dim, fontSize: 14 },
+  capValue: { color: C.text, fontSize: 14, fontWeight: "600", fontVariant: ["tabular-nums"] },
+  symbols: { flexDirection: "row", flexWrap: "wrap", gap: 7, marginTop: 2 },
+  symbol: {
+    color: C.text2,
+    fontSize: 12.5,
+    backgroundColor: C.bg2,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: 6,
+    paddingVertical: 5,
+    paddingHorizontal: 9,
+    overflow: "hidden",
+  },
+  symbolNote: { color: C.faint, fontSize: 12, lineHeight: 18, marginTop: 6 },
+  nevers: { gap: 10, marginTop: 2 },
+  neverRow: { flexDirection: "row", gap: 10 },
+  neverMark: { color: C.red, fontSize: 13, marginTop: 2 },
+  neverText: { color: C.dim, fontSize: 13.5, lineHeight: 20, flexShrink: 1 },
+  ownerBox: { backgroundColor: C.bg2, borderRadius: 10, padding: 13, gap: 4, marginTop: 14 },
+  ownerLabel: { color: C.faint, fontSize: 11, textTransform: "uppercase", letterSpacing: 1 },
+  ownerAddr: { color: C.text2, fontSize: 12 },
+  blocked: {
+    backgroundColor: "rgba(234,179,8,0.10)",
+    borderColor: "rgba(234,179,8,0.30)",
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 14,
+    gap: 6,
+    marginTop: 16,
+  },
+  blockedTitle: { color: C.gold, fontSize: 14, fontWeight: "700" },
+  blockedText: { color: C.dim, fontSize: 13, lineHeight: 20 },
+  em: { color: C.text2 },
+  secondary: {
+    backgroundColor: C.bg2,
+    borderRadius: 12,
+    minHeight: 52,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: C.border,
+    marginTop: 8,
+  },
+  secondaryText: { color: C.text2, fontSize: 15 },
+});
