@@ -1,6 +1,11 @@
 # merrymen mobile — native build plan
 
-Expo SDK 56 · React Native 0.85.3 · React 19.2.3 · genuinely native, no webview.
+**Expo SDK 57 · React Native 0.86.2 · React 19.2.3** · genuinely native, no webview.
+
+> **Target changed to SDK 57 by owner decision.** The analysis below argues for
+> SDK 56 and is kept intact — its reasoning is worth reading and everything except
+> the version numbers still applies. The deltas are in "Moving to SDK 57" below,
+> and they override section 1 and the install list in section 2.
 
 Produced by parallel investigation of the four things that could each sink this
 independently: the real SDK/RN/React pairing, viem + ZeroDev under Hermes, key
@@ -10,8 +15,8 @@ storage on iOS/Android, and the anti-jank architecture.
 
 | claim | result |
 | --- | --- |
-| `expo` latest is 57.0.9; SDK 56 resolves to 56.0.18 | confirmed — SDK 56 is one major behind |
-| `react-native@0.85.3`, `react@19.2.3` exist | confirmed |
+| `expo` latest is 57.0.9 | confirmed — this is now the target |
+| SDK 57 template pins RN 0.86.2 + React 19.2.3; SDK 56 pins RN 0.85.3 | confirmed via expo-template-default@57.0.11 / @56.0.32 |
 | `react-native-reanimated@4.3.1` peers `react-native: 0.81 - 0.85`, worklets `0.8.x` | confirmed — 0.85.3 is in range |
 | `react-native-reanimated@4.5.0` peers `0.83 - 0.86`, worklets `0.10.x` | confirmed — do not mix the two |
 | `@shopify/flash-list` 2.0.2 and 2.3.2 declare identical peers | confirmed |
@@ -40,6 +45,105 @@ It is also not free to remove: `web/src/app/api/recover/route.ts` and
 funds. Deleting the field breaks recovery. So hosted recovery cannot work the way
 self-hosted recovery does — that is the same unresolved question as #83, arriving
 from a second direction.
+
+## Moving to SDK 57 — the deltas that matter
+
+Taken from the official templates, which are what `create-expo-app` and
+`expo install` actually use: `expo-template-default@57.0.11` (the `sdk-57`
+dist-tag) versus `@56.0.32` (`sdk-56`).
+
+| package | SDK 56 | **SDK 57** | note |
+| --- | --- | --- | --- |
+| `expo` | ~56.0.18 | **~57.0.9** | |
+| `react-native` | 0.85.3 | **0.86.2** | this is the real change — 0.85.3 is a 56 pin |
+| `react` / `react-dom` | 19.2.3 | **19.2.3** | unchanged, so the requested React was right either way |
+| `react-native-reanimated` | 4.3.1 | **4.5.1** | **must move.** 4.3.1 peers `0.81 - 0.85`; it does not admit 0.86 |
+| `react-native-worklets` | 0.8.3 | **0.10.1** | reanimated 4.5.x peers `worklets: 0.10.x`. Mismatched worklets is a native crash, not a warning |
+| `expo-router` | ~56.2.17 | **~57.0.9** | |
+| `react-native-gesture-handler` | ~2.31.1 | **~2.32.0** | |
+| `react-native-safe-area-context` | ~5.7.0 | ~5.7.0 | unchanged |
+| `react-native-screens` | ~4.26.0 | ~4.26.0 | unchanged |
+
+Scaffold with `--template default@sdk-57`. Everything installed via
+`npx expo install` picks the 57 pins automatically; the only manual care is that
+**reanimated and worklets move as a pair.**
+
+### The SDK 57 install list, verified against `expo@57.0.9/bundledNativeModules.json`
+
+These are the versions `npx expo install` will actually choose — read out of the
+pin file itself, not inferred. Use this in place of section 2's list.
+
+```bash
+npx create-expo-app@latest mobile --template default@sdk-57
+cd mobile
+
+# native / Expo-pinned — MUST be `expo install`, never `npm i`
+npx expo install expo-secure-store expo-local-authentication \
+                 react-native-get-random-values react-native-svg \
+                 @expo/vector-icons
+#   resolves to: expo-secure-store ~57.0.1 · expo-local-authentication ~57.0.2
+#                react-native-get-random-values ~1.11.0 · react-native-svg 15.15.4
+#                @expo/vector-icons ^15.0.2
+
+# pure JS, not in Expo's matrix — npm is correct here
+npm i events@3.3.0 fastestsmallesttextencoderdecoder@1.0.22 \
+      zustand@5.0.14 use-sync-external-store@1.5.0 \
+      @noble/curves@1.9.7 viem@2.55.0 \
+      @zerodev/sdk@5.5.10 @zerodev/ecdsa-validator@5.4.9 @zerodev/permissions@5.6.3 \
+      @tanstack/react-query@5.101.4
+
+# deliberate deviation from Expo's pin — see below
+npm i @shopify/flash-list@2.3.2
+```
+
+**The FlashList override survives the SDK bump.** `expo@57.0.9` pins
+`@shopify/flash-list` at **2.0.2** — the same stale version SDK 56 pinned, so
+moving to 57 does not fix it. 2.0.2 predates every prepend/scroll fix the trade
+tape depends on (2.2.3 prepend jitter, 2.3.0 `inverted`, 2.3.1
+maintain-position-on-prepend, 2.3.2 the Android `removeClippedSubviews` crash),
+and 2.0.2 and 2.3.2 declare identical peers with no native module in v2, so the
+override carries no prebuilt-binary risk. `npx expo-doctor` will flag exactly one
+version mismatch. Accept it.
+
+`overrides` in `package.json` — still load-bearing on 57:
+
+```json
+"overrides": {
+  "react": "19.2.3",
+  "react-dom": "19.2.3",
+  "@noble/curves": "1.9.7",
+  "@shopify/flash-list": "2.3.2"
+}
+```
+
+Reanimated and worklets are already right from the template (4.5.1 / 0.10.1) and
+should not be pinned by hand.
+
+### What this invalidates, and what survives
+
+**Survives unchanged.** The whole architecture: New Architecture is mandatory,
+FlashList v2 with per-row store subscriptions, the vanilla-zustand store with
+identity-preserving ingest, one gated poller, the jank traps, the file plan, and
+the `merkletreejs` Metro stub. None of it is version-specific.
+
+**Needs re-proving on 0.86.2.** The Hermes global-surface enumeration in the
+crypto research was exhaustive against **RN 0.85.3 / Hermes 0.16**, not 0.86.2 /
+Hermes 0.17. Only one fact was re-checked across the bump — that `TextDecoder` is
+still absent — so the polyfill set stays as written, but it is now an inference on
+0.86 rather than a verified enumeration.
+
+That is cheap to settle and does not need a device: the section-5 Risk 1 smoke
+test (`npx expo export`) runs the real Metro resolver, and the section-5 Risk 3
+release-build check asserts the derived smart-account address matches what the
+same owner key produces on the web app. Those two together prove the polyfilled
+crypto is byte-identical on whatever Hermes ships. **Run them before writing UI**
+— that was already the plan's build order, and the SDK bump makes it more
+important, not less.
+
+**One less thing to worry about.** Recon flagged "Expo Go isn't on the App Store
+for SDK 56" as a risk. On 57 that is moot — and it was already moot here, because
+this app needs a development build from day one for `expo-secure-store`'s
+`requireAuthentication` config plugin and `react-native-get-random-values`.
 
 ---
 
