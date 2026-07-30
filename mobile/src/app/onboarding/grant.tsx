@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useCallback, useEffect, useState } from "react";
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { router } from "expo-router";
+import { signGrant } from "@/crypto/signGrant";
+import { saveGrant } from "@/crypto/grantStore";
 // A VALUE import, not just a type. The tradeable set is read from the shared core
 // package so the wall lists what the key may actually touch — and because a
 // type-only import would be erased at compile time, leaving the Metro alias for
@@ -47,6 +49,10 @@ const PRESETS: { id: string; label: string; blurb: string; caps: GrantCaps }[] =
 export default function Grant() {
   const [preset, setPreset] = useState(PRESETS[1]);
   const [owner, setOwner] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [step, setStep] = useState("signing…");
+  const [signed, setSigned] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     void (async () => {
@@ -62,6 +68,32 @@ export default function Grant() {
   }, []);
 
   const caps = preset.caps;
+
+  const sign = useCallback(async () => {
+    setError(null);
+    setBusy(true);
+    try {
+      const status = await readOwner();
+      if (status.state !== "present") {
+        // Re-read rather than trusting the address held in state: the OS can
+        // invalidate the key between screens, and signing with a stale
+        // assumption would fail confusingly deep inside the SDK.
+        setError("Your key isn't available. Restart onboarding.");
+        return;
+      }
+      const { grant } = await signGrant({
+        mnemonic: status.mnemonic,
+        caps,
+        onProgress: setStep,
+      });
+      await saveGrant(grant);
+      setSigned(grant.smartAccount);
+    } catch (e) {
+      setError(e instanceof Error ? `${e.message}` : "Signing failed.");
+    } finally {
+      setBusy(false);
+    }
+  }, [caps]);
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.content}>
@@ -123,20 +155,38 @@ export default function Grant() {
         </View>
       )}
 
-      {/* Deliberately not wired to a signer yet, and saying so beats a button that
-          quietly produces a weaker grant than the desktop one. See the note. */}
-      <View style={styles.blocked}>
-        <Text style={styles.blockedTitle}>Signing isn&apos;t wired up yet</Text>
-        <Text style={styles.blockedText}>
-          The caps above are real, but the part that decides <Text style={styles.em}>which assets and which
-          routers</Text> the key may touch lives in the dashboard&apos;s grant code. Re-typing it here would
-          create a second definition of the wall that could drift from the first without anything failing — so
-          it gets shared, not copied. Until then this screen shows the wall; it doesn&apos;t sign it.
-        </Text>
-      </View>
+      {signed ? (
+        <View style={styles.done}>
+          <Text style={styles.doneTitle}>Wall signed</Text>
+          <Text style={styles.doneLabel}>smart account</Text>
+          <Text style={styles.doneAddr}>{signed}</Text>
+          <Text style={styles.doneText}>
+            Fund this address with USDG and ETH for gas, and your agent can start inside the limits above. Your
+            recovery phrase never left this phone.
+          </Text>
+        </View>
+      ) : (
+        <>
+          {error && <Text style={styles.error}>{error}</Text>}
+          <Pressable style={[styles.primary, busy && styles.primaryOff]} disabled={busy} onPress={sign}>
+            {busy ? (
+              <View style={styles.busyRow}>
+                <ActivityIndicator color="#08120e" />
+                <Text style={styles.primaryText}>{step}</Text>
+              </View>
+            ) : (
+              <Text style={styles.primaryText}>Sign this wall</Text>
+            )}
+          </Pressable>
+          <Text style={styles.signNote}>
+            Signing happens on this device. Only the capped session key is ever shareable — your recovery
+            phrase is not part of what gets signed or sent.
+          </Text>
+        </>
+      )}
 
       <Pressable style={styles.secondary} onPress={() => router.replace("/")}>
-        <Text style={styles.secondaryText}>Continue to the dashboard</Text>
+        <Text style={styles.secondaryText}>{signed ? "Go to the dashboard" : "Skip for now"}</Text>
       </Pressable>
     </ScrollView>
   );
@@ -219,6 +269,32 @@ const styles = StyleSheet.create({
   ownerBox: { backgroundColor: C.bg2, borderRadius: 10, padding: 13, gap: 4, marginTop: 14 },
   ownerLabel: { color: C.faint, fontSize: 11, textTransform: "uppercase", letterSpacing: 1 },
   ownerAddr: { color: C.text2, fontSize: 12 },
+  primary: {
+    backgroundColor: C.green,
+    borderRadius: 12,
+    minHeight: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 16,
+  },
+  primaryOff: { opacity: 0.6 },
+  primaryText: { color: '#08120e', fontSize: 16, fontWeight: '700' },
+  busyRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  signNote: { color: C.faint, fontSize: 12, lineHeight: 18, marginTop: 8 },
+  error: { color: C.red, fontSize: 13, lineHeight: 19, marginTop: 12 },
+  done: {
+    backgroundColor: 'rgba(52,211,153,0.10)',
+    borderColor: 'rgba(52,211,153,0.35)',
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 15,
+    gap: 6,
+    marginTop: 16,
+  },
+  doneTitle: { color: C.green, fontSize: 15, fontWeight: '700' },
+  doneLabel: { color: C.faint, fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, marginTop: 4 },
+  doneAddr: { color: C.text, fontSize: 12 },
+  doneText: { color: C.dim, fontSize: 13, lineHeight: 19, marginTop: 4 },
   blocked: {
     backgroundColor: "rgba(234,179,8,0.10)",
     borderColor: "rgba(234,179,8,0.30)",

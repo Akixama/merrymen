@@ -53,9 +53,9 @@ import {
   UNISWAP_SWAP_ROUTER_ABI,
   PERMIT2_ABI,
   UNIVERSAL_ROUTER_ABI,
-  builtinGrantTargets,
+  buildWallPolicies,
+  usableExtraTokens,
   chainForId,
-  isValidCustomToken,
   robinhoodTestnet,
   GRANT_V4,
   TRADEABLE_V2,
@@ -141,156 +141,10 @@ async function mintGrant(
   const sessionAccount = privateKeyToAccount(sessionPrivateKey);
   const sessionSigner = await toECDSASigner({ signer: sessionAccount });
 
-  const now = Math.floor(Date.now() / 1000);
-  const expiresAt = now + caps.expiryDays * 86_400;
-  const allowedSpenders: Address[] = [
-    RIALTO.routerSnapshot as Address,
-    UNISWAP.swapRouter02 as Address,
-    MORPHO.steakhouseUsdgVault as Address,
-    // v4 never pulls tokens directly: the account approves PERMIT2, and Permit2
-    // grants the router a bounded expiring allowance. So Permit2 is what the
-    // token approves, and the router itself is approved for nothing.
-    UNISWAP.permit2 as Address,
-  ];
-
-  // Validate here too, at the last point before an address is sealed into an
-  // on-chain policy: a malformed entry would either brick the grant or silently
-  // widen it. Drop anything already covered by the built-in set or USDG so the
-  // policy has no duplicate permissions.
-  const builtinTargets = builtinGrantTargets();
-  const seenExtra = new Set<string>();
-  const dedupedExtras = extraTokens.filter((t) => {
-    if (!isValidCustomToken(t)) return false;
-    const key = t.address.toLowerCase();
-    if (builtinTargets.has(key) || seenExtra.has(key)) return false;
-    seenExtra.add(key);
-    return true;
-  });
-
-  const policies = [
-    // Hard expiry — the key dies even if every other control fails.
-    toTimestampPolicy({ validAfter: now, validUntil: expiresAt }),
-    // Bounded ops per day — a runaway loop cannot spam trades.
-    toRateLimitPolicy({ count: caps.maxOpsPerDay, interval: 86_400 }),
-    // The only calls this key can make, enforced by the account contract:
-    toCallPolicy({
-      policyVersion: CallPolicyVersion.V0_0_4,
-      permissions: [
-        {
-          // approve USDG, only to Rialto router / Morpho vault, only ≤ per-trade cap
-          target: CASH.USDG as Address,
-          valueLimit: 0n,
-          abi: erc20Abi,
-          functionName: "approve",
-          args: [
-            { condition: ParamCondition.ONE_OF, value: allowedSpenders },
-            { condition: ParamCondition.LESS_THAN_OR_EQUAL, value: usdgUnits(caps.perTradeUsdg) },
-          ],
-        },
-        // approve the TRADEABLE stock tokens for SELLS, only to the allowed
-        // routers. These match the v3-liquid set (tokens.ts) so a token the agent
-        // can buy, it can also sell. No amount condition: share counts are 18dp and
-        // not USDG-comparable — routers can only pull what's approved, and the USDG
-        // cap above bounds what the agent could ever have bought in the first place.
-        ...STOCK_TOKENS.filter((t) => (TRADEABLE_SYMBOLS as readonly string[]).includes(t.symbol)).map(
-          (t) =>
-            ({
-              target: t.address as Address,
-              valueLimit: 0n,
-              abi: erc20Abi,
-              functionName: "approve",
-              args: [{ condition: ParamCondition.ONE_OF, value: allowedSpenders }, null],
-            }) as const,
-        ),
-        // Owner-added tokens (memecoins), same shape and same routers. These are
-        // here ONLY because the owner explicitly listed them and is signing this
-        // grant right now — which is exactly why the wall can't widen by itself.
-        ...dedupedExtras.map(
-          (t) =>
-            ({
-              target: t.address as Address,
-              valueLimit: 0n,
-              abi: erc20Abi,
-              functionName: "approve",
-              args: [{ condition: ParamCondition.ONE_OF, value: allowedSpenders }, null],
-            }) as const,
-        ),
-        {
-          // USDG transfer OUT of the wall — recipient free-form (chat /transfer,
-          // user-confirmed) but the amount is hard-capped per call ON-CHAIN at
-          // the per-trade cap. Daily budgets bound it further worker-side.
-          target: CASH.USDG as Address,
-          valueLimit: 0n,
-          abi: erc20Abi,
-          functionName: "transfer",
-          args: [
-            null,
-            { condition: ParamCondition.LESS_THAN_OR_EQUAL, value: usdgUnits(caps.perTradeUsdg) },
-          ],
-        },
-        {
-          // Rialto router: target-scoped (its calldata comes from the quote API)
-          target: RIALTO.routerSnapshot as Address,
-          valueLimit: 0n,
-        },
-        {
-          // Uniswap SwapRouter02: only exactInputSingle. Spend is bounded by
-          // the approve cap above — the router can pull nothing beyond it.
-          target: UNISWAP.swapRouter02 as Address,
-          valueLimit: 0n,
-          abi: UNISWAP_SWAP_ROUTER_ABI,
-          functionName: "exactInputSingle",
-        },
-        {
-          // Morpho vault: deposits capped at the daily limit per call
-          target: MORPHO.steakhouseUsdgVault as Address,
-          valueLimit: 0n,
-          abi: VAULT_ABI,
-          functionName: "deposit",
-          args: [
-            { condition: ParamCondition.LESS_THAN_OR_EQUAL, value: usdgUnits(caps.dailyUsdg) },
-            null,
-          ],
-        },
-        {
-          // Morpho vault: withdrawals back to the account are unrestricted in size
-          target: MORPHO.steakhouseUsdgVault as Address,
-          valueLimit: 0n,
-          abi: VAULT_ABI,
-          functionName: "withdraw",
-        },
-        // ── Uniswap v4 ────────────────────────────────────────────────────
-        // v4 routes through Permit2 rather than approving the router directly,
-        // so it needs two permissions v3 never did. Both are narrow:
-        {
-          // Permit2 may be told to grant an allowance — but ONLY to the
-          // UniversalRouter. Without that constraint this permission would let
-          // the session key hand any spender an allowance on any token, which
-          // is a strictly larger power than trading.
-          target: UNISWAP.permit2 as Address,
-          valueLimit: 0n,
-          abi: PERMIT2_ABI,
-          functionName: "approve",
-          args: [
-            null,
-            { condition: ParamCondition.EQUAL, value: UNISWAP.universalRouter as Address },
-            null,
-            null,
-          ],
-        },
-        {
-          // The UniversalRouter executes command bundles. Its calldata is
-          // opaque to a call policy, so what actually bounds this is upstream:
-          // the router can only ever move what Permit2 allowed it, and Permit2
-          // is only ever granted the size of one trade, expiring.
-          target: UNISWAP.universalRouter as Address,
-          valueLimit: 0n,
-          abi: UNIVERSAL_ROUTER_ABI,
-          functionName: "execute",
-        },
-      ],
-    }),
-  ];
+  // THE WALL now lives in packages/core/src/wall.ts, so the phone app signs the
+  // IDENTICAL permission set rather than a second copy that could drift from this
+  // one with nothing failing when it did. worker/src/wall.test.ts pins its shape.
+  const { policies, now, expiresAt } = buildWallPolicies({ caps, extraTokens });
 
   const permissionValidator = await toPermissionValidator(publicClient, {
     entryPoint,
@@ -327,7 +181,10 @@ async function mintGrant(
     grantFeatures: ["transfer", TRADEABLE_V2, GRANT_V4],
     // What this signature ACTUALLY covers — the worker compares it against the
     // owner's configured tokens and says so when they've drifted apart.
-    grantTokens: dedupedExtras.map((t) => t.address.toLowerCase()),
+    // Same filter the wall itself applied, so what we RECORD as covered and what
+    // the policy actually covers cannot disagree — the worker compares this
+    // against the owner's configured tokens and warns when they've drifted.
+    grantTokens: usableExtraTokens(extraTokens).map((t) => t.address.toLowerCase()),
     demoSessionPrivateKey: sessionPrivateKey,
     demoOwnerPrivateKey: ownerPrivateKey,
   };

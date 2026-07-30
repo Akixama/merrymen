@@ -11,6 +11,12 @@
       ],
       "@merrymen/core": [
         "../packages/core/src/index.ts"
+      ],
+      "viem": [
+        "./node_modules/viem"
+      ],
+      "viem/*": [
+        "./node_modules/viem/*"
       ]
     }
   },

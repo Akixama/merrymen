@@ -6,3 +6,4 @@ export * from "./token";
 export * from "./protocols";
 export * from "./abis";
 export * from "./grant";
+export * from "./wall";
