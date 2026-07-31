@@ -27,6 +27,9 @@ export default function AppTabs() {
           <TabTrigger name="tape" href="/tape" asChild>
             <TabButton>Tape</TabButton>
           </TabTrigger>
+          <TabTrigger name="scoreboard" href="/scoreboard" asChild>
+            <TabButton>Record</TabButton>
+          </TabTrigger>
         </CustomTabList>
       </TabList>
     </Tabs>
