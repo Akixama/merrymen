@@ -7,12 +7,13 @@ import '../../polyfills';
 import { useEffect } from 'react';
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import { useColorScheme } from 'react-native';
+import { StyleSheet, Text, View, useColorScheme } from 'react-native';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { useFeedPoller } from '@/net/poller';
 import { warmCurve } from '@/crypto/warmup';
 import { useOwnerGate } from '@/crypto/useOwnerGate';
+import { PREVIEW } from '@/dev/preview';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -54,6 +55,27 @@ export default function RootLayout() {
         <Stack.Screen name="recover" options={{ gestureEnabled: false }} />
         <Stack.Screen name="onboarding" options={{ gestureEnabled: false }} />
       </Stack>
+      {/* Loud on purpose. A preview session has no key, so every screen it shows
+          is chrome over nothing — it must never be mistaken for a working app. */}
+      {PREVIEW && (
+        <View style={styles.previewBar} pointerEvents="none">
+          <Text style={styles.previewText}>PREVIEW — no key, nothing can sign</Text>
+        </View>
+      )}
     </ThemeProvider>
   );
 }
+
+const styles = StyleSheet.create({
+  previewBar: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: '#7a3b12',
+    paddingTop: 2,
+    paddingBottom: 3,
+    alignItems: 'center',
+  },
+  previewText: { color: '#ffd9b0', fontSize: 10, fontWeight: '700', letterSpacing: 0.6 },
+});

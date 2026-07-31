@@ -179,10 +179,26 @@ function AgentCard({ agent }: { agent: ScoreboardAgent }) {
   );
 }
 
+/**
+ * One cell of the stat grid.
+ *
+ * The label sits in a FIXED-HEIGHT box, bottom-aligned, and the number is what
+ * lines up. Without it the cells size themselves to their own label, so "landed"
+ * (one line) and "max drawdown" (two) put their numbers at different heights and
+ * a row of four reads visibly ragged.
+ *
+ * Reserving the space beats shortening the words: the phone's own text-size
+ * setting can wrap a label that fits at the default, so a row tuned by eye at
+ * 100% goes crooked again for anyone using large text.
+ */
 function Stat({ label, value, tone }: { label: string; value: string; tone?: string }) {
   return (
     <View style={styles.stat}>
-      <Text style={styles.statLabel}>{label}</Text>
+      <View style={styles.statLabelBox}>
+        <Text style={styles.statLabel} numberOfLines={2}>
+          {label}
+        </Text>
+      </View>
       <Text style={[styles.statValue, tone ? { color: tone } : null]}>{value}</Text>
     </View>
   );
@@ -245,7 +261,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 9,
     gap: 3,
   },
-  statLabel: { color: C.faint, fontSize: 9.5, textTransform: "uppercase", letterSpacing: 0.7 },
+  // Two lines' worth of 9.5/12 label, bottom-aligned — see Stat above.
+  statLabelBox: { height: 24, justifyContent: "flex-end" },
+  statLabel: {
+    color: C.faint,
+    fontSize: 9.5,
+    lineHeight: 12,
+    textTransform: "uppercase",
+    letterSpacing: 0.7,
+  },
   statValue: { color: C.text, fontSize: 14, fontWeight: "600", fontVariant: ["tabular-nums"] },
 
   verify: { minHeight: 40, justifyContent: "center", marginTop: 2 },

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { router, useSegments } from "expo-router";
+import { PREVIEW } from "@/dev/preview";
 import { readOwner } from "./keystore";
 
 /**
@@ -21,6 +22,14 @@ export function useOwnerGate(): { checked: boolean } {
   const [checked, setChecked] = useState(false);
 
   useEffect(() => {
+    // Design review in a browser, where there is no keystore to pass. Compiled
+    // out of release builds — see dev/preview.ts. Nothing is faked: the key is
+    // still absent, so signing still fails.
+    if (PREVIEW) {
+      setChecked(true);
+      return;
+    }
+
     let alive = true;
     void (async () => {
       const status = await readOwner();

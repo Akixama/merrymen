@@ -29,7 +29,23 @@ const SYMBOLS = [
   { symbol: "PIPECAT", price: 0.00042, source: "pool" },
 ];
 
-const KINDS = ["swap", "vault-deposit", "vault-withdraw"] as const;
+/**
+ * Weighted, not uniform. A trading agent overwhelmingly swaps; moving cash in and
+ * out of the vault is occasional housekeeping. Picking uniformly from three kinds
+ * made two thirds of the tape read "vault deposit" — which made the agent look
+ * like it mostly shuffles its own cash around, and gave no sense of what the tape
+ * shows on a normal day.
+ */
+const KINDS = [
+  "swap",
+  "swap",
+  "swap",
+  "swap",
+  "swap",
+  "swap",
+  "vault-deposit",
+  "vault-withdraw",
+] as const;
 
 let tick = 0;
 let equity = 10_000;

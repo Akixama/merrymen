@@ -1,27 +1,24 @@
-import {
-  Tabs,
-  TabList,
-  TabTrigger,
-  TabSlot,
-  TabTriggerSlotProps,
-  TabListProps,
-} from 'expo-router/ui';
-import { SymbolView } from 'expo-symbols';
-import { Pressable, useColorScheme, View, StyleSheet } from 'react-native';
+import { Tabs, TabList, TabTrigger, TabSlot, TabTriggerSlotProps, TabListProps } from 'expo-router/ui';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { ExternalLink } from './external-link';
-import { ThemedText } from './themed-text';
-import { ThemedView } from './themed-view';
+import { C } from '@/ui/tokens';
 
-import { Colors, MaxContentWidth, Spacing } from '@/constants/theme';
-
+/**
+ * The tab bar for the web target, which exists only so the app can be LOOKED at
+ * on a machine with no simulator. Native uses app-tabs.tsx and real NativeTabs.
+ *
+ * It mirrors the native bar deliberately — same three destinations, same order,
+ * same words, bottom-anchored — because its whole job is to make a browser
+ * preview representative of the phone. A different-looking web shell would mean
+ * every design judgement made here had to be re-made on a device.
+ */
 export default function AppTabs() {
   return (
     <Tabs>
-      <TabSlot style={{ height: '100%' }} />
+      <TabSlot style={styles.slot} />
       <TabList asChild>
-        <CustomTabList>
-          <TabTrigger name="home" href="/" asChild>
+        <BottomBar>
+          <TabTrigger name="index" href="/" asChild>
             <TabButton>Band</TabButton>
           </TabTrigger>
           <TabTrigger name="tape" href="/tape" asChild>
@@ -30,89 +27,46 @@ export default function AppTabs() {
           <TabTrigger name="scoreboard" href="/scoreboard" asChild>
             <TabButton>Record</TabButton>
           </TabTrigger>
-        </CustomTabList>
+        </BottomBar>
       </TabList>
     </Tabs>
   );
 }
 
-export function TabButton({ children, isFocused, ...props }: TabTriggerSlotProps) {
+function TabButton({ children, isFocused, ...props }: TabTriggerSlotProps) {
   return (
-    <Pressable {...props} style={({ pressed }) => pressed && styles.pressed}>
-      <ThemedView
-        type={isFocused ? 'backgroundSelected' : 'backgroundElement'}
-        style={styles.tabButtonView}>
-        <ThemedText type="small" themeColor={isFocused ? 'text' : 'textSecondary'}>
-          {children}
-        </ThemedText>
-      </ThemedView>
+    <Pressable {...props} style={styles.tab}>
+      <Text style={[styles.label, isFocused && styles.labelActive]}>{children}</Text>
+      {/* An underline rather than a filled pill: at this size a pill crowds three
+          words into a bar that also has to clear the home indicator. */}
+      <View style={[styles.rule, isFocused && styles.ruleActive]} />
     </Pressable>
   );
 }
 
-export function CustomTabList(props: TabListProps) {
-  const scheme = useColorScheme();
-  const colors = Colors[scheme === 'unspecified' ? 'light' : scheme];
-
-  return (
-    <View {...props} style={styles.tabListContainer}>
-      <ThemedView type="backgroundElement" style={styles.innerContainer}>
-        <ThemedText type="smallBold" style={styles.brandText}>
-          Expo Starter
-        </ThemedText>
-
-        {props.children}
-
-        <ExternalLink href="https://docs.expo.dev" asChild>
-          <Pressable style={styles.externalPressable}>
-            <ThemedText type="link">Docs</ThemedText>
-            <SymbolView
-              tintColor={colors.text}
-              name={{ ios: 'arrow.up.right.square', web: 'link' }}
-              size={12}
-            />
-          </Pressable>
-        </ExternalLink>
-      </ThemedView>
-    </View>
-  );
+function BottomBar(props: TabListProps) {
+  // flex: 1 on each tab and no minimum width — the earlier version sized itself
+  // from its content and pushed the page to 409px inside a 375px viewport, which
+  // is the one layout bug a phone-shaped app cannot have.
+  return <View {...props} style={styles.bar} />;
 }
 
 const styles = StyleSheet.create({
-  tabListContainer: {
+  slot: { height: '100%' },
+  bar: {
     position: 'absolute',
-    width: '100%',
-    padding: Spacing.three,
-    justifyContent: 'center',
-    alignItems: 'center',
+    bottom: 0,
+    left: 0,
+    right: 0,
     flexDirection: 'row',
+    backgroundColor: C.bg1,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: C.border,
+    paddingBottom: 10,
   },
-  innerContainer: {
-    paddingVertical: Spacing.two,
-    paddingHorizontal: Spacing.five,
-    borderRadius: Spacing.five,
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexGrow: 1,
-    gap: Spacing.two,
-    maxWidth: MaxContentWidth,
-  },
-  brandText: {
-    marginRight: 'auto',
-  },
-  pressed: {
-    opacity: 0.7,
-  },
-  tabButtonView: {
-    paddingVertical: Spacing.one,
-    paddingHorizontal: Spacing.three,
-    borderRadius: Spacing.three,
-  },
-  externalPressable: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: Spacing.one,
-    marginLeft: Spacing.three,
-  },
+  tab: { flex: 1, alignItems: 'center', paddingTop: 10, gap: 6 },
+  label: { color: C.faint, fontSize: 12, fontWeight: '600', letterSpacing: 0.3 },
+  labelActive: { color: C.text },
+  rule: { height: 2, width: 18, borderRadius: 1, backgroundColor: 'transparent' },
+  ruleActive: { backgroundColor: C.green },
 });
