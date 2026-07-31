@@ -4,6 +4,7 @@ import { router, useLocalSearchParams } from "expo-router";
 import * as Clipboard from "expo-clipboard";
 import { buildQuiz } from "@/crypto/mnemonic";
 import { writeOwner } from "@/crypto/keystore";
+import { useBottomPad, useTopPad } from "@/ui/insets";
 import { C } from "@/ui/tokens";
 
 /**
@@ -24,6 +25,8 @@ import { C } from "@/ui/tokens";
  * because the owner bailed halfway costs nothing.
  */
 export default function Backup() {
+  const topPad = useTopPad();
+  const bottomPad = useBottomPad();
   const { mnemonic } = useLocalSearchParams<{ mnemonic: string }>();
   const words = useMemo(() => (mnemonic ?? "").split(" ").filter(Boolean), [mnemonic]);
 
@@ -71,7 +74,7 @@ export default function Backup() {
   };
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingTop: topPad, paddingBottom: bottomPad }]}>
       {stage === "show" ? (
         <>
           <Text style={styles.h1}>Write these down</Text>
@@ -160,7 +163,7 @@ export default function Backup() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
-  content: { padding: 24, paddingTop: 72, paddingBottom: 60, gap: 14 },
+  content: { paddingHorizontal: 24, gap: 14 },
   h1: { color: C.text, fontSize: 28, fontWeight: "700", letterSpacing: -0.5 },
   lede: { color: C.dim, fontSize: 15, lineHeight: 22 },
   grid: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 },

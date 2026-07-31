@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import * as Clipboard from "expo-clipboard";
 import { createPublicClient, http } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { createKernelAccount } from "@zerodev/sdk";
@@ -9,6 +10,8 @@ import { serializePermissionAccount, toPermissionValidator } from "@zerodev/perm
 import { toECDSASigner } from "@zerodev/permissions/signers";
 import { toRateLimitPolicy, toTimestampPolicy } from "@zerodev/permissions/policies";
 import { warmCurve } from "@/crypto/warmup";
+import { useBottomPad, useTopPad } from "@/ui/insets";
+import { C, GUTTER } from "@/ui/tokens";
 
 /**
  * THE CRYPTO PROBE. Not a feature — a proof, and it earns its place in the repo.
@@ -40,6 +43,8 @@ const CHAIN_ID = 4663;
 type Step = { name: string; ms: number; note?: string };
 
 export default function Probe() {
+  const topPad = useTopPad();
+  const bottomPad = useBottomPad();
   const [steps, setSteps] = useState<Step[]>([]);
   const [account, setAccount] = useState<string | null>(null);
   const [owner, setOwner] = useState<string | null>(null);
@@ -127,19 +132,29 @@ export default function Probe() {
   const total = steps.reduce((s, x) => s + x.ms, 0);
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.content}>
-      <Text style={styles.h1}>crypto probe</Text>
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={[styles.content, { paddingTop: topPad, paddingBottom: bottomPad }]}>
+      <Text style={styles.h1}>Crypto probe</Text>
       <Text style={styles.sub}>
         Proves the ZeroDev + viem graph resolves and runs under Hermes. Chain {CHAIN_ID}. Read timings from a
         release build only — dev mode numbers mean nothing.
       </Text>
 
+      {/* Both buttons dim while a run is in flight, and both say so. Only the
+          first used to change its label, so during a warm run — which opens with
+          a deliberate 1200ms wait before the first step is even recorded — the
+          screen was indistinguishable from idle and both buttons still looked
+          tappable. */}
       <View style={styles.row}>
-        <Pressable style={styles.btn} disabled={busy} onPress={() => run(false)}>
+        <Pressable style={[styles.btn, busy && styles.btnBusy]} disabled={busy} onPress={() => run(false)}>
           <Text style={styles.btnText}>{busy ? "running…" : "run cold"}</Text>
         </Pressable>
-        <Pressable style={[styles.btn, styles.btnAlt]} disabled={busy} onPress={() => run(true)}>
-          <Text style={styles.btnText}>run warmed</Text>
+        <Pressable
+          style={[styles.btn, styles.btnAlt, busy && styles.btnBusy]}
+          disabled={busy}
+          onPress={() => run(true)}>
+          <Text style={[styles.btnText, styles.btnAltText]}>{busy ? "running…" : "run warmed"}</Text>
         </Pressable>
       </View>
 
@@ -159,43 +174,95 @@ export default function Probe() {
         </View>
       )}
 
-      {owner && (
-        <View style={styles.addrBox}>
-          <Text style={styles.addrLabel}>owner EOA</Text>
-          <Text style={styles.addr}>{owner}</Text>
-        </View>
-      )}
+      {owner && <Addr label="owner EOA" value={owner} />}
       {account && (
-        <View style={styles.addrBox}>
-          <Text style={styles.addrLabel}>derived smart account</Text>
-          <Text style={styles.addr}>{account}</Text>
+        <Addr label="derived smart account" value={account}>
           <Text style={styles.addrNote}>
             The correctness check: feed the same owner key to the web app and this address must match
             exactly. If it does, the polyfilled crypto is byte-identical. A fresh key is generated each
             run, so to compare you must pin one.
           </Text>
-        </View>
+        </Addr>
       )}
     </ScrollView>
   );
 }
 
+/**
+ * An address, in a face where you can actually compare one to another.
+ *
+ * The whole point of this screen is checking that 42 hex characters produced on
+ * a phone match 42 produced in a browser, and a proportional font is the worst
+ * possible setting for that: 0/O and 1/l land at different widths, so the eye
+ * has nothing to track against. Monospaced, and tappable to copy — comparing by
+ * reading it aloud is not a workflow.
+ */
+function Addr({ label, value, children }: { label: string; value: string; children?: React.ReactNode }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <Pressable
+      style={styles.addrBox}
+      onPress={() => {
+        void Clipboard.setStringAsync(value);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1400);
+      }}>
+      <View style={styles.addrHead}>
+        <Text style={styles.addrLabel}>{label}</Text>
+        <Text style={styles.addrCopy}>{copied ? "copied" : "tap to copy"}</Text>
+      </View>
+      <Text style={styles.addr}>{value}</Text>
+      {children}
+    </Pressable>
+  );
+}
+
+// Colours come from the token layer. This file used to re-declare the entire
+// palette as hex literals — every one an exact duplicate of a token — plus a
+// second type scale, which is why it read like a page from a different product.
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#0d1512" },
-  content: { padding: 20, paddingBottom: 60, gap: 12 },
-  h1: { color: "#e9f2ec", fontSize: 22, fontWeight: "700" },
-  sub: { color: "#94a89e", fontSize: 13, lineHeight: 19 },
+  root: { flex: 1, backgroundColor: C.bg },
+  content: { paddingHorizontal: GUTTER, gap: 12 },
+  h1: { color: C.text, fontSize: 30, fontWeight: "700", letterSpacing: -0.8 },
+  sub: { color: C.dim, fontSize: 14, lineHeight: 20 },
   row: { flexDirection: "row", gap: 10, marginTop: 6 },
-  btn: { backgroundColor: "#34d399", paddingVertical: 13, paddingHorizontal: 20, borderRadius: 10, minHeight: 46, justifyContent: "center" },
-  btnAlt: { backgroundColor: "#1d2b25" },
+  btn: {
+    backgroundColor: C.green,
+    paddingVertical: 13,
+    paddingHorizontal: 20,
+    borderRadius: 10,
+    minHeight: 46,
+    justifyContent: "center",
+  },
+  btnAlt: { backgroundColor: C.bg3 },
+  btnBusy: { opacity: 0.45 },
   btnText: { color: "#08120e", fontWeight: "700", fontSize: 14 },
-  err: { color: "#fb7185", fontSize: 13, marginTop: 8 },
-  step: { flexDirection: "row", justifyContent: "space-between", borderBottomColor: "#26362f", borderBottomWidth: 1, paddingVertical: 9, gap: 12 },
-  stepName: { color: "#c3cec4", fontSize: 13, flexShrink: 1 },
-  stepMs: { color: "#e9f2ec", fontSize: 13, fontVariant: ["tabular-nums"] },
-  totalLabel: { fontWeight: "700", color: "#34d399" },
-  addrBox: { backgroundColor: "#16211c", borderRadius: 10, padding: 14, gap: 6, marginTop: 8 },
-  addrLabel: { color: "#647a70", fontSize: 11, textTransform: "uppercase", letterSpacing: 1 },
-  addr: { color: "#e9f2ec", fontSize: 12 },
-  addrNote: { color: "#94a89e", fontSize: 12, lineHeight: 18, marginTop: 4 },
+  // The secondary button needs its OWN text colour. It shared the primary's
+  // near-black label while carrying a near-black background — rgb(8,18,14) on
+  // rgb(29,43,37) is 1.29:1, so the words were invisible and the control read as
+  // an empty slab.
+  btnAltText: { color: C.text },
+  err: { color: C.red, fontSize: 13, marginTop: 8 },
+  step: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    borderBottomColor: C.border,
+    borderBottomWidth: 1,
+    paddingVertical: 9,
+    gap: 12,
+  },
+  stepName: { color: C.text2, fontSize: 13, flexShrink: 1 },
+  stepMs: { color: C.text, fontSize: 13, fontVariant: ["tabular-nums"] },
+  totalLabel: { fontWeight: "700", color: C.green },
+  addrBox: { backgroundColor: C.bg2, borderRadius: 12, padding: 14, gap: 6, marginTop: 8 },
+  addrHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  addrLabel: { color: C.faint, fontSize: 11, textTransform: "uppercase", letterSpacing: 1 },
+  addrCopy: { color: C.dim, fontSize: 11 },
+  addr: {
+    color: C.text,
+    fontSize: 12.5,
+    lineHeight: 18,
+    fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),
+  },
+  addrNote: { color: C.dim, fontSize: 12, lineHeight: 18, marginTop: 4 },
 });

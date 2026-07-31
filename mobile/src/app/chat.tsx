@@ -4,6 +4,7 @@ import { router } from "expo-router";
 import * as Clipboard from "expo-clipboard";
 import { feedOrigin, isMock } from "@/net/api";
 import { chatUrl, fetchTelegramStatus, type TelegramStatus } from "@/net/telegram";
+import { useBottomPad, useTopPad } from "@/ui/insets";
 import { C } from "@/ui/tokens";
 
 /**
@@ -23,6 +24,8 @@ import { C } from "@/ui/tokens";
  * hand you the link code, and open the real conversation in one tap.
  */
 export default function Chat() {
+  const topPad = useTopPad();
+  const bottomPad = useBottomPad();
   const [status, setStatus] = useState<TelegramStatus | null>(null);
   const [mock, setMock] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -63,7 +66,7 @@ export default function Chat() {
   const linked = Boolean(status?.owner);
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingTop: topPad, paddingBottom: bottomPad }]}>
       <Text style={styles.h1}>Chat with your merryman</Text>
       <Text style={styles.lede}>
         Ask it what it&apos;s holding, why it made a trade, or tell it to stop. The conversation happens in
@@ -93,7 +96,10 @@ export default function Chat() {
         </>
       ) : status ? (
         <>
-          <View style={styles.card}>
+          {/* rowCard, not card: rows carry their own vertical padding and their
+              own separator, so the card's `gap` on top of that pushed every rule
+              8dp toward the row above instead of sitting between the two. */}
+          <View style={[styles.card, styles.rowCard]}>
             <Row label="bridge" value={status.enabled ? "on" : "off"} tone={status.enabled ? C.green : C.faint} />
             <Row
               label="bot"
@@ -198,7 +204,7 @@ function Ask({ cmd, what, last }: { cmd: string; what: string; last?: boolean })
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
-  content: { padding: 24, paddingTop: 60, paddingBottom: 60, gap: 12 },
+  content: { paddingHorizontal: 24, gap: 12 },
   h1: { color: C.text, fontSize: 27, fontWeight: "700", letterSpacing: -0.5 },
   lede: { color: C.dim, fontSize: 15, lineHeight: 22 },
   mockBadge: {
@@ -225,6 +231,8 @@ const styles = StyleSheet.create({
     minHeight: 40,
   },
   rowLast: { borderBottomWidth: 0 },
+  /** For cards whose children are Rows — the rows space themselves. */
+  rowCard: { gap: 0 },
   rowLabel: { color: C.dim, fontSize: 13.5 },
   rowValue: { color: C.text, fontSize: 13.5 },
   askCmd: { color: C.green, fontSize: 13.5, fontWeight: "600" },

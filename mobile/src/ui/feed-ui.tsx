@@ -1,6 +1,6 @@
 import { memo } from "react";
-import { StyleSheet, Text, View } from "react-native";
-import Svg, { Path } from "react-native-svg";
+import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
+import { EXPLORER } from "@/net/chainlinks";
 import { usePosition, useTrade } from "@/store/selectors";
 import { C } from "./tokens";
 
@@ -39,10 +39,18 @@ export const PositionRowView = memo(function PositionRowView({ symbol }: { symbo
     <View style={styles.row}>
       <View style={styles.rowMain}>
         <Text style={styles.sym}>{p.symbol}</Text>
-        <View style={styles.tags}>
-          {pooled && <Text style={[styles.tag, styles.tagPool]}>pool</Text>}
-          {stale && <Text style={[styles.tag, styles.tagStale]}>stale</Text>}
-        </View>
+        {/* Rendered ONLY when there is a tag. An always-present empty View still
+            collects the column's `gap`, which made the left column taller than
+            its one line of text — and with the row centring two unequal columns,
+            the symbol then sat 8dp below the value it belongs to. Four of five
+            rows drifted; the one row that happened to have a tag was the only one
+            that lined up. */}
+        {(pooled || stale) && (
+          <View style={styles.tags}>
+            {pooled && <Text style={[styles.tag, styles.tagPool]}>pool</Text>}
+            {stale && <Text style={[styles.tag, styles.tagStale]}>stale</Text>}
+          </View>
+        )}
       </View>
       <View style={styles.rowNums}>
         <Text style={styles.value}>{usd(p.value_usdg)}</Text>
@@ -51,6 +59,16 @@ export const PositionRowView = memo(function PositionRowView({ symbol }: { symbo
     </View>
   );
 });
+
+/** How long ago, in the shortest form that stays legible at any age. */
+export function ago(iso: string): string {
+  const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+  if (!Number.isFinite(s)) return "";
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86_400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86_400)}d`;
+}
 
 export const TapeRowView = memo(function TapeRowView({ id }: { id: string }) {
   const t = useTrade(id);
@@ -64,72 +82,66 @@ export const TapeRowView = memo(function TapeRowView({ id }: { id: string }) {
       ? `${t.sell_token ?? "?"} → ${t.buy_token ?? "?"}`
       : t.kind.replace("vault-", "vault ");
 
+  const openReceipt = t.tx_hash ? () => void Linking.openURL(`${EXPLORER}/tx/${t.tx_hash}`) : undefined;
+
+  // The receipt is the whole point of a non-custodial agent, so where one exists
+  // the row is the link to it. Everywhere else in the app a chain identifier is
+  // tappable; the one screen that actually shows hashes was the one that made
+  // them dead text.
   return (
-    <View style={styles.row}>
+    <Pressable
+      style={styles.row}
+      onPress={openReceipt}
+      disabled={!openReceipt}
+      accessibilityRole={openReceipt ? "link" : undefined}
+      accessibilityLabel={openReceipt ? `${what}, ${t.status}, open receipt` : undefined}>
       <View style={styles.rowMain}>
         <Text style={styles.what} numberOfLines={1}>
           {what}
         </Text>
         {/* A rejected trade explains itself. "rejected" alone tells the owner
             nothing about which wall it hit. */}
-        <Text style={styles.meta} numberOfLines={1}>
+        <Text style={[styles.meta, openReceipt && styles.metaLink]} numberOfLines={1}>
           {t.reject_rule ? `refused · ${t.reject_rule}` : t.tx_hash ? shortHash(t.tx_hash) : "no receipt"}
         </Text>
       </View>
       <View style={styles.rowNums}>
         <Text style={styles.value}>{usd(t.amount_usdg)}</Text>
-        <Text style={[styles.status, { color: tone }]}>{t.status}</Text>
+        <View style={styles.statusLine}>
+          {/* A chronological feed with no times in it is just a list. */}
+          <Text style={styles.when}>{ago(t.created_at)}</Text>
+          <Text style={[styles.status, { color: tone }]}>{t.status}</Text>
+        </View>
       </View>
-    </View>
+    </Pressable>
   );
 });
 
-/**
- * Equity sparkline. Pure SVG over a numeric series.
+/*
+ * There used to be a second equity chart here — a bare stroked Sparkline, with
+ * its own copy of the min/max/scale maths. It is gone: ui/AreaChart draws both
+ * screens now.
  *
- * memo'd on the array identity, which the store keeps stable when the numbers
- * haven't moved — so a poll that changes nothing does not rebuild the path string.
+ * Two implementations of one idea is not just duplication. This one mapped the
+ * series max to y=0 and sized the SVG to exactly `height`, so half the stroke
+ * fell outside the viewport and the peak and trough — the two points anyone
+ * looks at — rendered at half weight. The bug existed only because the geometry
+ * was written twice, and only one of the two copies had tests.
  */
-export const Sparkline = memo(function Sparkline({
-  series,
-  width = 320,
-  height = 44,
-}: {
-  series: number[];
-  width?: number;
-  height?: number;
-}) {
-  if (series.length < 2) return <View style={{ height }} />;
-
-  const min = Math.min(...series);
-  const max = Math.max(...series);
-  // A flat series has zero range; dividing by it would put the line at NaN and
-  // render nothing, which reads as "no data" rather than "no change".
-  const span = max - min || 1;
-  const dx = width / (series.length - 1);
-
-  let d = "";
-  for (let i = 0; i < series.length; i++) {
-    const x = Math.round(i * dx * 10) / 10;
-    const y = Math.round((height - ((series[i] - min) / span) * height) * 10) / 10;
-    d += `${i === 0 ? "M" : "L"}${x} ${y}`;
-  }
-
-  const up = series[series.length - 1] >= series[0];
-  return (
-    <Svg width={width} height={height}>
-      <Path d={d} stroke={up ? C.green : C.red} strokeWidth={1.5} fill="none" />
-    </Svg>
-  );
-});
 
 const styles = StyleSheet.create({
   row: {
     flexDirection: "row",
-    alignItems: "center",
+    // flex-start, not center. The two columns are different heights — the right
+    // is always two lines, the left is one unless it carries a tag — and centring
+    // unequal columns means their first lines can never share a baseline.
+    alignItems: "flex-start",
     justifyContent: "space-between",
     paddingVertical: 12,
-    paddingHorizontal: 4,
+    // No horizontal padding. The list already applies the page gutter, so 4dp
+    // here pushed every row 4dp inside the margin that the section heading, the
+    // equity figure and the sparkline all share — while the row's own separator
+    // still spanned the full width and overhung its text on both sides.
     gap: 12,
     borderBottomWidth: 1,
     borderBottomColor: C.border,
@@ -139,9 +151,13 @@ const styles = StyleSheet.create({
   sym: { color: C.text, fontSize: 15, fontWeight: "600" },
   what: { color: C.text, fontSize: 14 },
   meta: { color: C.faint, fontSize: 11 },
+  /** A hash you can open reads as an affordance, not as background noise. */
+  metaLink: { color: C.dim },
   // tabular-nums so a changing figure doesn't shift the row's width.
   value: { color: C.text, fontSize: 15, fontVariant: ["tabular-nums"] },
   price: { color: C.dim, fontSize: 11, fontVariant: ["tabular-nums"] },
+  statusLine: { flexDirection: "row", alignItems: "center", gap: 6 },
+  when: { color: C.faint, fontSize: 11, fontVariant: ["tabular-nums"] },
   status: { fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5 },
   tags: { flexDirection: "row", gap: 6 },
   tag: { fontSize: 10, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4, overflow: "hidden" },

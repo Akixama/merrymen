@@ -10,6 +10,7 @@ import { saveGrant } from "@/crypto/grantStore";
 import { TRADEABLE_SYMBOLS, type GrantCaps } from "@merrymen/core";
 import { accountFromMnemonic } from "@/crypto/mnemonic";
 import { readOwner } from "@/crypto/keystore";
+import { useBottomPad, useTopPad } from "@/ui/insets";
 import { C } from "@/ui/tokens";
 
 /**
@@ -47,6 +48,8 @@ const PRESETS: { id: string; label: string; blurb: string; caps: GrantCaps }[] =
 ];
 
 export default function Grant() {
+  const topPad = useTopPad();
+  const bottomPad = useBottomPad();
   const [preset, setPreset] = useState(PRESETS[1]);
   const [owner, setOwner] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -96,7 +99,7 @@ export default function Grant() {
   }, [caps]);
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingTop: topPad, paddingBottom: bottomPad }]}>
       <Text style={styles.h1}>The permission wall</Text>
       <Text style={styles.lede}>
         You&apos;re about to give your agent a key that can trade — and only trade, inside these limits. The
@@ -124,7 +127,7 @@ export default function Grant() {
         <Cap label="most per day" value={`${caps.dailyUsdg} USDG`} />
         <Cap label="trades per day" value={`${caps.maxOpsPerDay}`} />
         <Cap label="key expires in" value={`${caps.expiryDays} days`} />
-        <Cap label="stops out at" value={`−${caps.maxDrawdownPct}% drawdown`} />
+        <Cap label="stops out at" value={`−${caps.maxDrawdownPct}% drawdown`} last />
       </View>
 
       <Text style={styles.section}>what it may trade</Text>
@@ -192,9 +195,15 @@ export default function Grant() {
   );
 }
 
-function Cap({ label, value }: { label: string; value: string }) {
+/**
+ * `last` drops the trailing rule. Without it the final row still drew its
+ * separator 5dp above the card's own bottom edge — a divider between the last
+ * value and nothing, which then read as the card's edge and made the real edge
+ * look misaligned.
+ */
+function Cap({ label, value, last }: { label: string; value: string; last?: boolean }) {
   return (
-    <View style={styles.capRow}>
+    <View style={[styles.capRow, last && styles.capRowLast]}>
       <Text style={styles.capLabel}>{label}</Text>
       <Text style={styles.capValue}>{value}</Text>
     </View>
@@ -212,7 +221,7 @@ function Never({ text }: { text: string }) {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
-  content: { padding: 24, paddingTop: 72, paddingBottom: 60, gap: 12 },
+  content: { paddingHorizontal: 24, gap: 12 },
   h1: { color: C.text, fontSize: 28, fontWeight: "700", letterSpacing: -0.5 },
   lede: { color: C.dim, fontSize: 15, lineHeight: 22 },
   section: {
@@ -247,6 +256,7 @@ const styles = StyleSheet.create({
     borderBottomColor: C.border,
     gap: 12,
   },
+  capRowLast: { borderBottomWidth: 0 },
   capLabel: { color: C.dim, fontSize: 14 },
   capValue: { color: C.text, fontSize: 14, fontWeight: "600", fontVariant: ["tabular-nums"] },
   symbols: { flexDirection: "row", flexWrap: "wrap", gap: 7, marginTop: 2 },
@@ -295,18 +305,6 @@ const styles = StyleSheet.create({
   doneLabel: { color: C.faint, fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, marginTop: 4 },
   doneAddr: { color: C.text, fontSize: 12 },
   doneText: { color: C.dim, fontSize: 13, lineHeight: 19, marginTop: 4 },
-  blocked: {
-    backgroundColor: "rgba(234,179,8,0.10)",
-    borderColor: "rgba(234,179,8,0.30)",
-    borderWidth: 1,
-    borderRadius: 12,
-    padding: 14,
-    gap: 6,
-    marginTop: 16,
-  },
-  blockedTitle: { color: C.gold, fontSize: 14, fontWeight: "700" },
-  blockedText: { color: C.dim, fontSize: 13, lineHeight: 20 },
-  em: { color: C.text2 },
   secondary: {
     backgroundColor: C.bg2,
     borderRadius: 12,

@@ -8,6 +8,7 @@ import { accountFromMnemonic, privateKeyFromMnemonic, validateMnemonic } from "@
 import { forgetOwner, readOwner, writeOwner } from "@/crypto/keystore";
 import { readGrant } from "@/crypto/grantStore";
 import { EXPLORER, RPC_URL } from "@/net/chainlinks";
+import { useBottomPad, useTopPad } from "@/ui/insets";
 import { C } from "@/ui/tokens";
 
 /**
@@ -30,6 +31,8 @@ import { C } from "@/ui/tokens";
 type Stage = "restore" | "plan" | "sent";
 
 export default function Recover() {
+  const topPad = useTopPad();
+  const bottomPad = useBottomPad();
   const [stage, setStage] = useState<Stage>("restore");
   const [phrase, setPhrase] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -140,7 +143,15 @@ export default function Recover() {
   const noGas = plan ? plan.gasWei === 0n : false;
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+    // automaticallyAdjustKeyboardInsets, because this screen does not scroll: its
+    // content is shorter than the viewport, so there is no scroll range to drag
+    // and the keyboard simply covers the bottom of "Restore my key". On the one
+    // screen someone reaches in a panic, the button they came for was buried.
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={[styles.content, { paddingTop: topPad, paddingBottom: bottomPad }]}
+      automaticallyAdjustKeyboardInsets
+      keyboardShouldPersistTaps="handled">
       {stage === "restore" && (
         <>
           <Text style={styles.h1}>This device lost its key</Text>
@@ -348,7 +359,7 @@ export default function Recover() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
-  content: { padding: 24, paddingTop: 72, paddingBottom: 60, gap: 12 },
+  content: { paddingHorizontal: 24, gap: 12 },
   h1: { color: C.text, fontSize: 27, fontWeight: "700", letterSpacing: -0.5 },
   lede: { color: C.dim, fontSize: 15, lineHeight: 22 },
   strong: { color: C.green, fontWeight: "700" },

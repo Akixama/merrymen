@@ -9,6 +9,7 @@ import { feedOrigin, isMock } from "@/net/api";
 import { forgetOwner, readOwner } from "@/crypto/keystore";
 import { clearGrant, readGrant, secondsLeft } from "@/crypto/grantStore";
 import { accountFromMnemonic } from "@/crypto/mnemonic";
+import { useBottomPad, useTopPad } from "@/ui/insets";
 import { C } from "@/ui/tokens";
 
 /**
@@ -43,6 +44,8 @@ function countdown(sec: number): string {
 }
 
 export default function Settings() {
+  const topPad = useTopPad();
+  const bottomPad = useBottomPad();
   const [grant, setGrant] = useState<Omit<StoredGrant, "demoOwnerPrivateKey"> | null>(null);
   const [owner, setOwner] = useState<string | null>(null);
   const [phrase, setPhrase] = useState<string | null>(null);
@@ -108,7 +111,7 @@ export default function Settings() {
   const left = grant ? secondsLeft(grant) : 0;
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+    <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingTop: topPad, paddingBottom: bottomPad }]}>
       <Text style={styles.h1}>Settings</Text>
 
       {/* ── the wall ─────────────────────────────────────────────────────── */}
@@ -116,7 +119,7 @@ export default function Settings() {
       {!loaded ? (
         <Text style={styles.muted}>reading…</Text>
       ) : grant ? (
-        <View style={styles.card}>
+        <View style={[styles.card, styles.rowCard]}>
           <Row label="smart account" value={short(grant.smartAccount)} onCopy={() => Clipboard.setStringAsync(grant.smartAccount)} />
           <Row label="session key" value={short(grant.sessionKeyAddress)} />
           <Row label="owner" value={owner ? short(owner) : "—"} onCopy={owner ? () => Clipboard.setStringAsync(owner) : undefined} />
@@ -252,7 +255,7 @@ function Bullet({ text }: { text: string }) {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
-  content: { padding: 20, paddingTop: 60, paddingBottom: 60, gap: 10 },
+  content: { paddingHorizontal: 20, gap: 10 },
   h1: { color: C.text, fontSize: 28, fontWeight: "700", letterSpacing: -0.5, marginBottom: 4 },
   section: {
     color: C.faint,
@@ -273,6 +276,12 @@ const styles = StyleSheet.create({
     minHeight: 44,
   },
   rowLast: { borderBottomWidth: 0 },
+  /**
+   * For cards whose children are Rows. The rows already carry their own vertical
+   * padding AND their own separator, so the card's `gap` stacked on top pushed
+   * every rule 10dp toward the row above it rather than sitting between the two.
+   */
+  rowCard: { gap: 0 },
   rowLabel: { color: C.dim, fontSize: 13.5 },
   rowValue: { color: C.text, fontSize: 13.5, fontVariant: ["tabular-nums"] },
   body: { color: C.dim, fontSize: 13.5, lineHeight: 20 },
@@ -285,14 +294,20 @@ const styles = StyleSheet.create({
   linkText: { color: C.green, fontSize: 13 },
   action: {
     backgroundColor: C.bg3,
-    borderRadius: 10,
+    borderRadius: 12,
     minHeight: 46,
     alignItems: "center",
     justifyContent: "center",
+    // "Sweep the account to a wallet I control" already fills 80% of the button
+    // at the default text size; with no horizontal padding it touches both
+    // borders at iOS Larger Text and wraps flush against them above that.
+    // recover.tsx solved this on its equivalent button and settings never got it.
+    paddingHorizontal: 16,
+    paddingVertical: 10,
     borderWidth: 1,
     borderColor: C.border,
   },
-  actionText: { color: C.text2, fontSize: 14, fontWeight: "600" },
+  actionText: { color: C.text2, fontSize: 14, fontWeight: "600", textAlign: "center" },
   grid: { flexDirection: "row", flexWrap: "wrap", gap: 7 },
   wordCell: {
     flexDirection: "row",
@@ -311,10 +326,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
     borderWidth: 1,
     borderColor: "rgba(251,113,133,0.35)",
     marginTop: 4,
   },
-  dangerText: { color: C.red, fontSize: 15, fontWeight: "600" },
+  dangerText: { color: C.red, fontSize: 15, fontWeight: "600", textAlign: "center" },
   dangerNote: { color: C.faint, fontSize: 12, lineHeight: 18, marginTop: 6 },
 });

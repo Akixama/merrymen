@@ -13,7 +13,8 @@ import {
 import { EXPLORER } from "@/net/chainlinks";
 import { fetchScoreboard, type ScoreboardAgent } from "@/net/scoreboard";
 import { AreaChart } from "@/ui/AreaChart";
-import { C } from "@/ui/tokens";
+import { useListBottomPad, useTopPad } from "@/ui/insets";
+import { C, GUTTER } from "@/ui/tokens";
 
 /**
  * The scoreboard — how the band is actually doing.
@@ -29,7 +30,10 @@ import { C } from "@/ui/tokens";
  * scoreboard that confuses them is worse than one that admits the gap.
  */
 
-const W = Dimensions.get("window").width - 40;
+/** Screen width less the page gutter on both sides. */
+const W = Dimensions.get("window").width - GUTTER * 2;
+/** ...less the card's own padding on both sides: the card's content box. */
+const CARD_W = W - 28;
 
 const fmt = (n: number, dp = 2) =>
   n.toLocaleString(undefined, { minimumFractionDigits: dp, maximumFractionDigits: dp });
@@ -47,6 +51,8 @@ function expiryLabel(expiresAt: number): { text: string; tone: string } {
 }
 
 export default function Scoreboard() {
+  const topPad = useTopPad();
+  const bottomPad = useListBottomPad();
   const [agents, setAgents] = useState<ScoreboardAgent[] | null>(null);
   const [mock, setMock] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -78,7 +84,7 @@ export default function Scoreboard() {
   return (
     <ScrollView
       style={styles.root}
-      contentContainerStyle={styles.content}
+      contentContainerStyle={[styles.content, { paddingTop: topPad, paddingBottom: bottomPad }]}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.dim} />}
     >
       <Text style={styles.h1}>Scoreboard</Text>
@@ -150,8 +156,13 @@ function AgentCard({ agent }: { agent: ScoreboardAgent }) {
       </View>
       {pnl === null && <Text style={styles.pnlNote}>Not enough history yet to say.</Text>}
 
+      {/* No negative margin. The wrapper used to bleed 2dp each side while the
+          chart inside was a FIXED width — and a fixed-width child in a stretch
+          container falls back to flex-start, so the whole 4dp of slack landed on
+          the right and the chart hung 2dp past the card's left edge only. Same
+          width as the stat grid below it, so they share both edges. */}
       <View style={styles.chartWrap}>
-        <AreaChart series={series} width={W - 28} height={104} />
+        <AreaChart series={series} width={CARD_W} height={104} />
       </View>
 
       <View style={styles.stats}>
@@ -163,7 +174,13 @@ function AgentCard({ agent }: { agent: ScoreboardAgent }) {
       <View style={styles.stats}>
         <Stat label="volume" value={fmt(volume_usdg, 0)} />
         <Stat label="peak" value={fmt(agent.hwm_usdg, 0)} />
-        <Stat label="max drawdown" value={`${(agent.max_drawdown_bps / 100).toFixed(2)}%`} />
+        {/* "worst drop", not "max drawdown". Measured in a 4-up grid on a 375dp
+            screen each cell gives 58.75dp of text width, and DRAWDOWN needs 64.6
+            — it does not fit at any size worth reading, so it clipped to
+            "MAX DRAWDO…" however many lines it was allowed. WORST (36.6) and
+            DROP (28.5) both fit with room to spare, it pairs with "peak" right
+            beside it, and it is the plainer word anyway. */}
+        <Stat label="worst drop" value={`${(agent.max_drawdown_bps / 100).toFixed(2)}%`} />
         <Stat label="fees owed" value={fmt(agent.accrued_fee_usdg)} />
       </View>
 
@@ -206,7 +223,7 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: str
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
-  content: { padding: 20, paddingTop: 56, paddingBottom: 48, gap: 10 },
+  content: { paddingHorizontal: GUTTER, gap: 10 },
   h1: { color: C.text, fontSize: 30, fontWeight: "700", letterSpacing: -0.8 },
   sub: { color: C.dim, fontSize: 14, lineHeight: 20, marginBottom: 6 },
   center: { paddingVertical: 40, alignItems: "center" },
@@ -250,7 +267,7 @@ const styles = StyleSheet.create({
   pct: { fontSize: 13, fontWeight: "600", fontVariant: ["tabular-nums"] },
   pnlNote: { color: C.faint, fontSize: 12, marginTop: -4 },
 
-  chartWrap: { marginTop: 2, marginHorizontal: -2 },
+  chartWrap: { marginTop: 2 },
 
   stats: { flexDirection: "row", gap: 8 },
   stat: {
@@ -258,20 +275,28 @@ const styles = StyleSheet.create({
     backgroundColor: C.bg2,
     borderRadius: 10,
     paddingVertical: 9,
-    paddingHorizontal: 9,
+    // 6, not 9. Four flex:1 cells in a 305dp card leave 70.75dp each; at 9dp a
+    // side that is 51.5dp of text, and "DRAWDOWN" needs ~56 — so the label
+    // clipped to "MAX DRAWDO…" no matter how many lines it was allowed. 6dp
+    // gives 58.75dp and the word fits whole.
+    paddingHorizontal: 6,
     gap: 3,
   },
   // Two lines' worth of 9.5/12 label, bottom-aligned — see Stat above.
   statLabelBox: { height: 24, justifyContent: "flex-end" },
   statLabel: {
+    // 10.5 rather than 9.5: below Apple's smallest text style (caption2, 11pt)
+    // these were the least legible thing on the screen, on the quietest colour.
     color: C.faint,
-    fontSize: 9.5,
+    fontSize: 10.5,
     lineHeight: 12,
     textTransform: "uppercase",
-    letterSpacing: 0.7,
+    // Tighter tracking buys back the width the larger size costs.
+    letterSpacing: 0.3,
   },
   statValue: { color: C.text, fontSize: 14, fontWeight: "600", fontVariant: ["tabular-nums"] },
 
-  verify: { minHeight: 40, justifyContent: "center", marginTop: 2 },
+  // 44, the platform minimum. It is the card's only control and it leaves the app.
+  verify: { minHeight: 44, justifyContent: "center", marginTop: 2 },
   verifyText: { color: C.green, fontSize: 12.5 },
 });

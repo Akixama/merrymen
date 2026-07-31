@@ -2,7 +2,8 @@ import { StyleSheet, Text, View } from "react-native";
 import { FlashList } from "@shopify/flash-list";
 import { useLastOkAt, useTapeIds } from "@/store/selectors";
 import { TapeRowView } from "@/ui/feed-ui";
-import { C } from "@/ui/tokens";
+import { useListBottomPad, useTopPad } from "@/ui/insets";
+import { C, GUTTER } from "@/ui/tokens";
 
 /**
  * The trade tape — every decision the agent made, newest first.
@@ -19,13 +20,12 @@ import { C } from "@/ui/tokens";
  *   A real keyExtractor, so a prepended row does not cause every row below it to
  *   be treated as changed.
  *
- *   getItemType by status, so FlashList recycles a "landed" row into another
- *   "landed" row rather than reshaping one that had different content.
- *
  * The tape is capped at ingest, not here. Trimming in the component still pays to
  * hold and diff the whole history.
  */
 export default function Tape() {
+  const topPad = useTopPad();
+  const bottomPad = useListBottomPad();
   const ids = useTapeIds();
   const lastOkAt = useLastOkAt();
 
@@ -35,12 +35,24 @@ export default function Tape() {
         data={ids}
         keyExtractor={(id) => id}
         renderItem={({ item }) => <TapeRowView id={item} />}
-        // Recycle like-for-like. A rejected row and a landed row have different
-        // shapes, so letting FlashList reuse one as the other costs a re-layout.
-        getItemType={(id) => id.length > 40 ? "onchain" : "offchain"}
+        // Recycle like-for-like: a row with a receipt renders a hash, one without
+        // renders a refusal reason, and the two measure differently.
+        //
+        // This used to test `id.length > 40`, which never split anything —
+        // tradeId returns a 66-char tx_hash OR "<ISO timestamp>|kind|buy|sell|amt",
+        // and an ISO timestamp alone is 24 characters, so BOTH branches cleared 40
+        // and every row typed the same. The distinction the old comment described
+        // was never actually made. `0x` is the real discriminator, because it is
+        // precisely tradeId's "there is a tx_hash" branch.
+        getItemType={(id) => (id.startsWith("0x") ? "receipt" : "no-receipt")}
         maintainVisibleContentPosition={{ autoscrollToTopThreshold: 80 }}
-        contentContainerStyle={styles.listPad}
-        ListHeaderComponent={<Text style={styles.title}>trade tape</Text>}
+        contentContainerStyle={[styles.listPad, { paddingBottom: bottomPad }]}
+        ListHeaderComponent={
+          <View style={{ paddingTop: topPad, paddingBottom: 10 }}>
+            <Text style={styles.title}>Tape</Text>
+            <Text style={styles.lede}>Every decision, newest first — including the refused ones.</Text>
+          </View>
+        }
         ListEmptyComponent={
           <Text style={styles.empty}>
             {lastOkAt === null
@@ -55,14 +67,11 @@ export default function Tape() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
-  listPad: { paddingHorizontal: 20, paddingBottom: 40 },
-  title: {
-    color: C.dim,
-    fontSize: 12,
-    textTransform: "uppercase",
-    letterSpacing: 1.4,
-    paddingTop: 20,
-    paddingBottom: 8,
-  },
+  listPad: { paddingHorizontal: GUTTER },
+  // A page title, at the same rank as the Scoreboard's. It was previously
+  // byte-identical to the Band's "POSITIONS" sub-heading — so the top-level label
+  // on one tab carried exactly the weight of a third-level label on another.
+  title: { color: C.text, fontSize: 30, fontWeight: "700", letterSpacing: -0.8 },
+  lede: { color: C.dim, fontSize: 14, lineHeight: 20, marginTop: 6 },
   empty: { color: C.dim, fontSize: 13, lineHeight: 20, paddingVertical: 18 },
 });

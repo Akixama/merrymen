@@ -14,8 +14,10 @@ import {
   useStrategy,
   useVault,
 } from "@/store/selectors";
-import { PositionRowView, Sparkline } from "@/ui/feed-ui";
-import { C } from "@/ui/tokens";
+import { AreaChart } from "@/ui/AreaChart";
+import { PositionRowView } from "@/ui/feed-ui";
+import { useListBottomPad, useTopPad } from "@/ui/insets";
+import { C, GUTTER } from "@/ui/tokens";
 
 /**
  * The live band — equity, cash, and the open positions.
@@ -33,13 +35,27 @@ function money(n: number | null): string {
   return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+/**
+ * How old the numbers on screen are.
+ *
+ * Rolls over past minutes, which matters precisely because this line exists for
+ * the failure case: a poll that fails keeps the last good figures on screen, so
+ * an agent that has been unreachable for a day has to say "1d ago" and not
+ * "1440m ago" — a four-digit minute count is a number you have to do arithmetic
+ * on before you know whether to worry.
+ */
 function age(ms: number | null): string {
   if (ms === null) return "never";
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
-  return s < 60 ? `${s}s ago` : `${Math.floor(s / 60)}m ago`;
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86_400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86_400)}d ago`;
 }
 
 export default function Band() {
+  const topPad = useTopPad();
+  const bottomPad = useListBottomPad();
   const equity = useEquity();
   const cash = useCash();
   const vault = useVault();
@@ -72,9 +88,9 @@ export default function Band() {
         // behaviour is that rows visibly jump. Off here; the tape keeps it, because
         // the tape only ever prepends.
         maintainVisibleContentPosition={{ disabled: true }}
-        contentContainerStyle={styles.listPad}
+        contentContainerStyle={[styles.listPad, { paddingBottom: bottomPad }]}
         ListHeaderComponent={
-          <View style={styles.header}>
+          <View style={[styles.header, { paddingTop: topPad }]}>
             {isMock && (
               <View style={styles.mockBadge}>
                 <Text style={styles.mockText}>
@@ -100,7 +116,15 @@ export default function Band() {
               )}
             </View>
 
-            <Sparkline series={series} width={W} />
+            {/* The SAME chart component the Scoreboard uses, at a smaller height.
+                These two screens each show "how the money moved" and were drawing
+                it two different ways — a bare stroke here, a filled area with a
+                baseline there — so the identical idea read as two unrelated
+                things. It was also the weaker of the two: no fill, and no line
+                marking where the money started, so "up" was a shape you had to
+                interpret rather than see. One implementation now, and it is the
+                one whose geometry is unit-tested. */}
+            <AreaChart series={series} width={W} height={64} />
 
             <View style={styles.split}>
               <View style={styles.splitCell}>
@@ -117,6 +141,10 @@ export default function Band() {
                 the last good numbers on screen, so this line has to say how old
                 they are — otherwise the screen presents stale data as current. */}
             <View style={styles.statusRow}>
+              {/* The dot pins to the FIRST line, not the block's centre. This line
+                  grows to two or three lines in exactly the case it exists to
+                  announce — a failed read appends the error and the feed origin —
+                  and a centred dot then floats to the middle of the paragraph. */}
               <View style={[styles.dot, { backgroundColor: lastError ? C.gold : C.green }]} />
               <Text style={styles.status}>
                 {lastError ? `last read failed · ${lastError} · ` : ""}
@@ -160,8 +188,8 @@ export default function Band() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
-  listPad: { paddingHorizontal: 20, paddingBottom: 40 },
-  header: { paddingTop: 16, gap: 6 },
+  listPad: { paddingHorizontal: GUTTER },
+  header: { gap: 6 },
   mockBadge: {
     backgroundColor: "rgba(234,179,8,0.12)",
     borderColor: "rgba(234,179,8,0.35)",
@@ -171,18 +199,29 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   mockText: { color: C.gold, fontSize: 11, lineHeight: 16 },
-  who: { color: C.dim, fontSize: 13 },
-  strategy: { color: C.faint },
+  // The agent's name IS this screen's title — the tab set's three screens each
+  // open with a title-case name at title weight, and here it happens to be the
+  // merryman's rather than the screen's. Set at a rank you can see from across
+  // the room, because knowing WHICH agent you are looking at matters before any
+  // number on the page does.
+  who: { color: C.text, fontSize: 20, fontWeight: "700", letterSpacing: -0.3 },
+  strategy: { color: C.dim, fontSize: 13, fontWeight: "400", letterSpacing: 0 },
   equity: { color: C.text, fontSize: 42, fontWeight: "700", fontVariant: ["tabular-nums"], letterSpacing: -1 },
   equityMeta: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: -4 },
   unit: { color: C.faint, fontSize: 12 },
   delta: { fontSize: 13, fontVariant: ["tabular-nums"] },
   split: { flexDirection: "row", gap: 28, marginTop: 10 },
-  splitCell: { gap: 2 },
+  // flex:1 pins the two columns to a stable grid. Content-sized, the VAULT
+  // column's position was derived from however wide the cash figure rendered, so
+  // it slid left and right as the balance changed — which threw away the whole
+  // point of the tabular-nums on the values below.
+  splitCell: { flex: 1, gap: 2 },
   splitLabel: { color: C.faint, fontSize: 11, textTransform: "uppercase", letterSpacing: 1 },
   splitValue: { color: C.text2, fontSize: 15, fontVariant: ["tabular-nums"] },
-  statusRow: { flexDirection: "row", alignItems: "center", gap: 7, marginTop: 14 },
-  dot: { width: 7, height: 7, borderRadius: 4 },
+  statusRow: { flexDirection: "row", alignItems: "flex-start", gap: 7, marginTop: 14 },
+  // marginTop centres the dot on the first line's x-height rather than on the
+  // whole (possibly wrapped) block.
+  dot: { width: 7, height: 7, borderRadius: 4, marginTop: 4 },
   status: { color: C.faint, fontSize: 11, flexShrink: 1 },
   sectionTitle: {
     color: C.dim,

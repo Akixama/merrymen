@@ -5,21 +5,22 @@
 import '../../polyfills';
 
 import { useEffect } from 'react';
-import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
+import { DarkTheme, Stack, ThemeProvider } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import { StyleSheet, Text, View, useColorScheme } from 'react-native';
+import { StatusBar } from 'expo-status-bar';
+import { StyleSheet, Text, View } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { useFeedPoller } from '@/net/poller';
 import { warmCurve } from '@/crypto/warmup';
 import { useOwnerGate } from '@/crypto/useOwnerGate';
 import { PREVIEW } from '@/dev/preview';
+import { C } from '@/ui/tokens';
 
 SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
-  const colorScheme = useColorScheme();
-
   // Route by key state before anything else matters: no key -> onboarding, key
   // destroyed by the OS -> recovery (never onboarding, which would generate a new
   // key over a funded account).
@@ -38,31 +39,43 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <AnimatedSplashOverlay />
-      {/* A Stack at the root, with the tab bar as ONE of its screens. Settings,
-          the probe, recovery and onboarding are pushed over the tabs rather than
-          living inside them — which is what lets them exist without each needing
-          a tab trigger. */}
-      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#0d1512' } }}>
-        <Stack.Screen name="(tabs)" />
-        <Stack.Screen name="settings" options={{ presentation: 'modal', headerShown: false }} />
-        <Stack.Screen name="chat" options={{ presentation: 'modal' }} />
-        <Stack.Screen name="probe" options={{ presentation: 'modal' }} />
-        {/* Recovery is not dismissable by gesture: it is reached only when the key
-            is already gone, and swiping past it lands on a dashboard that cannot
-            work. */}
-        <Stack.Screen name="recover" options={{ gestureEnabled: false }} />
-        <Stack.Screen name="onboarding" options={{ gestureEnabled: false }} />
-      </Stack>
-      {/* Loud on purpose. A preview session has no key, so every screen it shows
-          is chrome over nothing — it must never be mistaken for a working app. */}
-      {PREVIEW && (
-        <View style={styles.previewBar} pointerEvents="none">
-          <Text style={styles.previewText}>PREVIEW — no key, nothing can sign</Text>
-        </View>
-      )}
-    </ThemeProvider>
+    // SafeAreaProvider must wrap everything, because useSafeAreaInsets reads from
+    // its context — a screen calling it outside the provider gets zeros, which is
+    // exactly the bug this whole change exists to fix, only silent.
+    <SafeAreaProvider>
+      {/* DarkTheme unconditionally, not by colorScheme. Every screen paints the
+          dark palette regardless of system appearance, so following the system
+          here only produced a light navigation container behind a dark app. The
+          same reasoning sets userInterfaceStyle "dark" in app.json and pins the
+          status bar below: this app has one appearance, and the chrome has to
+          agree with it or the OS draws black glyphs on a near-black screen. */}
+      <ThemeProvider value={DarkTheme}>
+        <StatusBar style="light" />
+        <AnimatedSplashOverlay />
+        {/* A Stack at the root, with the tab bar as ONE of its screens. Settings,
+            the probe, recovery and onboarding are pushed over the tabs rather than
+            living inside them — which is what lets them exist without each needing
+            a tab trigger. */}
+        <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: C.bg } }}>
+          <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="settings" options={{ presentation: 'modal', headerShown: false }} />
+          <Stack.Screen name="chat" options={{ presentation: 'modal' }} />
+          <Stack.Screen name="probe" options={{ presentation: 'modal' }} />
+          {/* Recovery is not dismissable by gesture: it is reached only when the key
+              is already gone, and swiping past it lands on a dashboard that cannot
+              work. */}
+          <Stack.Screen name="recover" options={{ gestureEnabled: false }} />
+          <Stack.Screen name="onboarding" options={{ gestureEnabled: false }} />
+        </Stack>
+        {/* Loud on purpose. A preview session has no key, so every screen it shows
+            is chrome over nothing — it must never be mistaken for a working app. */}
+        {PREVIEW && (
+          <View style={styles.previewBar} pointerEvents="none">
+            <Text style={styles.previewText}>PREVIEW — no key, nothing can sign</Text>
+          </View>
+        )}
+      </ThemeProvider>
+    </SafeAreaProvider>
   );
 }
 

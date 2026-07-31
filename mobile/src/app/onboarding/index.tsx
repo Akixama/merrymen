@@ -3,6 +3,7 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, 
 import { router } from "expo-router";
 import { accountFromMnemonic, newMnemonic, validateMnemonic } from "@/crypto/mnemonic";
 import { keystoreAvailable, writeOwner } from "@/crypto/keystore";
+import { useBottomPad, useTopPad } from "@/ui/insets";
 import { C } from "@/ui/tokens";
 
 /**
@@ -18,6 +19,8 @@ import { C } from "@/ui/tokens";
  * theatre.
  */
 export default function OnboardingStart() {
+  const topPad = useTopPad();
+  const bottomPad = useBottomPad();
   const [mode, setMode] = useState<"choose" | "import">("choose");
   const [phrase, setPhrase] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -73,7 +76,13 @@ export default function OnboardingStart() {
   })();
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+    // Same as recover.tsx: import mode puts a text field above the primary
+    // button on a screen with no scroll range, so the keyboard covers the button.
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={[styles.content, { paddingTop: topPad, paddingBottom: bottomPad }]}
+      automaticallyAdjustKeyboardInsets
+      keyboardShouldPersistTaps="handled">
       <Text style={styles.h1}>Your key, your machine</Text>
       <Text style={styles.lede}>
         merrymen creates a key that lives only on this phone. It signs the permission wall your agent trades
@@ -137,7 +146,7 @@ export default function OnboardingStart() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
-  content: { padding: 24, paddingTop: 72, paddingBottom: 60, gap: 14 },
+  content: { paddingHorizontal: 24, gap: 14 },
   h1: { color: C.text, fontSize: 28, fontWeight: "700", letterSpacing: -0.5 },
   lede: { color: C.dim, fontSize: 15, lineHeight: 22, marginBottom: 10 },
   primary: {
