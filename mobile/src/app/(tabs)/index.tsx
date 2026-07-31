@@ -136,6 +136,11 @@ export default function Band() {
         }
         ListFooterComponent={
           <View style={styles.footerLinks}>
+            <Link href="/chat" asChild>
+              <Pressable style={styles.footerBtn}>
+                <Text style={styles.footerBtnText}>chat with your merryman</Text>
+              </Pressable>
+            </Link>
             <Link href="/settings" asChild>
               <Pressable style={styles.footerBtn}>
                 <Text style={styles.footerBtnText}>settings &amp; the wall</Text>

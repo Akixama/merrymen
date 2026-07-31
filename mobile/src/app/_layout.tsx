@@ -46,6 +46,7 @@ export default function RootLayout() {
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#0d1512' } }}>
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="settings" options={{ presentation: 'modal', headerShown: false }} />
+        <Stack.Screen name="chat" options={{ presentation: 'modal' }} />
         <Stack.Screen name="probe" options={{ presentation: 'modal' }} />
         {/* Recovery is not dismissable by gesture: it is reached only when the key
             is already gone, and swiping past it lands on a dashboard that cannot
