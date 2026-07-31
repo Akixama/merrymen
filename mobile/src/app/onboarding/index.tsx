@@ -1,30 +1,47 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { router } from "expo-router";
-import { accountFromMnemonic, newMnemonic, validateMnemonic } from "@/crypto/mnemonic";
+import * as Clipboard from "expo-clipboard";
+import { accountFromMnemonic, buildQuiz, newMnemonic, validateMnemonic } from "@/crypto/mnemonic";
 import { keystoreAvailable, writeOwner } from "@/crypto/keystore";
 import { useBottomPad, useTopPad } from "@/ui/insets";
 import { C } from "@/ui/tokens";
 
 /**
- * Step one: bring a key into existence, or bring an existing one back.
+ * Step one of two: get a key. (Step two is the wall.)
  *
- * Creating does NOT save anything yet — the phrase is handed to the backup screen
- * and only written to the keychain once the owner has proved they copied it down.
- * Saving first would let someone reach a funded account with no backup, which is
- * the state that turns a lost phone into permanently unreachable money.
+ * This was two routes — choose-or-import, then a separate backup screen — which
+ * made "make a key" look like two things and duplicated the whole stylesheet.
+ * It is one screen with four stages now, and the stages are strictly sequential,
+ * so there is no navigation to reason about and no phrase passed through a
+ * route parameter.
  *
- * Importing is different and does save immediately: the owner already has the
- * phrase written down somewhere, by definition, so re-quizzing them on it would be
- * theatre.
+ * NOTHING IS PERSISTED UNTIL THE QUIZ PASSES. That ordering is the whole point:
+ * per worker/src/recover.ts the owner key is the ONLY thing that can sweep a
+ * smart account, so a key saved before its backup is confirmed is funds with a
+ * single point of failure the owner cannot see — and on a phone-only product
+ * that point of failure is "drops phone in a canal". A key discarded because
+ * someone bailed halfway costs nothing.
+ *
+ * Importing is different and saves immediately: the owner already has the phrase
+ * written down, by definition, so re-quizzing them would be theatre.
  */
+
+type Stage = "choose" | "import" | "write" | "quiz";
+
 export default function OnboardingStart() {
   const topPad = useTopPad();
   const bottomPad = useBottomPad();
-  const [mode, setMode] = useState<"choose" | "import">("choose");
-  const [phrase, setPhrase] = useState("");
+  const [stage, setStage] = useState<Stage>("choose");
+  const [mnemonic, setMnemonic] = useState<string | null>(null);
+  const [typed, setTyped] = useState("");
+  const [quiz, setQuiz] = useState<ReturnType<typeof buildQuiz>>([]);
+  const [answers, setAnswers] = useState<Record<number, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const words = useMemo(() => (mnemonic ?? "").split(" ").filter(Boolean), [mnemonic]);
 
   const create = useCallback(async () => {
     setError(null);
@@ -34,10 +51,9 @@ export default function OnboardingStart() {
         setError("This device has no secure keystore, so a key can't be stored safely here.");
         return;
       }
-      const mnemonic = newMnemonic();
-      // Passed through navigation, not persisted. The backup screen owns the
-      // decision to commit it.
-      router.push({ pathname: "/onboarding/backup", params: { mnemonic } });
+      // Held in memory only. Committed in `confirm`, once the quiz passes.
+      setMnemonic(newMnemonic());
+      setStage("write");
     } finally {
       setBusy(false);
     }
@@ -45,7 +61,7 @@ export default function OnboardingStart() {
 
   const restore = useCallback(async () => {
     setError(null);
-    const check = validateMnemonic(phrase);
+    const check = validateMnemonic(typed);
     if (!check.ok) {
       setError(check.reason);
       return;
@@ -63,10 +79,33 @@ export default function OnboardingStart() {
     } finally {
       setBusy(false);
     }
-  }, [phrase]);
+  }, [typed]);
+
+  const confirm = useCallback(async () => {
+    const wrong = quiz.filter((q) => answers[q.index] !== q.answer);
+    if (wrong.length > 0) {
+      // Re-roll the questions. Otherwise a wrong answer becomes a two-guess
+      // multiple choice, which proves nothing.
+      setError(
+        `${wrong.length === 1 ? "One word is" : `${wrong.length} words are`} wrong. Check your copy — here are three fresh questions.`,
+      );
+      setQuiz(buildQuiz(mnemonic!, 3));
+      setAnswers({});
+      return;
+    }
+    setBusy(true);
+    try {
+      await writeOwner(mnemonic!);
+      router.replace("/onboarding/grant");
+    } catch {
+      setError("Couldn't save to the keychain. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  }, [quiz, answers, mnemonic]);
 
   const preview = (() => {
-    const check = validateMnemonic(phrase);
+    const check = validateMnemonic(typed);
     if (!check.ok) return null;
     try {
       return accountFromMnemonic(check.mnemonic).address;
@@ -76,43 +115,45 @@ export default function OnboardingStart() {
   })();
 
   return (
-    // Same as recover.tsx: import mode puts a text field above the primary
-    // button on a screen with no scroll range, so the keyboard covers the button.
     <ScrollView
       style={styles.root}
       contentContainerStyle={[styles.content, { paddingTop: topPad, paddingBottom: bottomPad }]}
       automaticallyAdjustKeyboardInsets
       keyboardShouldPersistTaps="handled">
-      <Text style={styles.h1}>Your key, your machine</Text>
-      <Text style={styles.lede}>
-        merrymen creates a key that lives only on this phone. It signs the permission wall your agent trades
-        inside — and it is the only thing that can ever move your funds back out.
-      </Text>
-
-      {mode === "choose" ? (
+      {stage === "choose" && (
         <>
+          <Text style={styles.h1}>Your key, your machine</Text>
+          <Text style={styles.lede}>
+            merrymen creates a key that lives only on this phone. It signs the permission wall your agent
+            trades inside — and it is the only thing that can ever move your funds back out.
+          </Text>
+
           <Pressable style={styles.primary} disabled={busy} onPress={create}>
             {busy ? <ActivityIndicator color="#08120e" /> : <Text style={styles.primaryText}>Create a new key</Text>}
           </Pressable>
-          <Pressable style={styles.secondary} onPress={() => setMode("import")}>
+          <Pressable style={styles.secondary} onPress={() => setStage("import")}>
             <Text style={styles.secondaryText}>I already have a recovery phrase</Text>
           </Pressable>
+          {error && <Text style={styles.error}>{error}</Text>}
 
           <View style={styles.note}>
             <Text style={styles.noteText}>
-              Next you&apos;ll be shown twelve words and asked to prove you wrote them down. That step can&apos;t
-              be skipped, because those words are the only way back if this phone is lost or wiped.
+              Next you&apos;ll be shown twelve words and asked to prove you wrote them down. That step
+              can&apos;t be skipped, because those words are the only way back if this phone is lost or wiped.
             </Text>
           </View>
         </>
-      ) : (
+      )}
+
+      {stage === "import" && (
         <>
+          <Text style={styles.h1}>Your key, your machine</Text>
           <Text style={styles.label}>Recovery phrase</Text>
           <TextInput
             style={styles.input}
-            value={phrase}
+            value={typed}
             onChangeText={(t) => {
-              setPhrase(t);
+              setTyped(t);
               setError(null);
             }}
             placeholder="twelve words, separated by spaces"
@@ -135,8 +176,101 @@ export default function OnboardingStart() {
           <Pressable style={styles.primary} disabled={busy} onPress={restore}>
             {busy ? <ActivityIndicator color="#08120e" /> : <Text style={styles.primaryText}>Restore</Text>}
           </Pressable>
-          <Pressable style={styles.secondary} onPress={() => setMode("choose")}>
-            <Text style={styles.secondaryText}>Back</Text>
+          <Pressable style={styles.ghost} onPress={() => setStage("choose")}>
+            <Text style={styles.ghostText}>back</Text>
+          </Pressable>
+        </>
+      )}
+
+      {stage === "write" && (
+        <>
+          <Text style={styles.h1}>Write these down</Text>
+          <Text style={styles.lede}>
+            Twelve words, in this order. They are the only way to reach your funds if this phone is lost,
+            wiped, or stops working. Nobody can send them to you again — not us, not anyone.
+          </Text>
+
+          <View style={styles.grid}>
+            {words.map((w, i) => (
+              <View key={`${i}-${w}`} style={styles.wordCell}>
+                <Text style={styles.wordIndex}>{i + 1}</Text>
+                <Text style={styles.word}>{w}</Text>
+              </View>
+            ))}
+          </View>
+
+          <View style={styles.warn}>
+            <Text style={styles.warnText}>
+              Paper beats screenshots. A photo in your camera roll syncs to the cloud, and anyone who reaches
+              that reaches your money.
+            </Text>
+          </View>
+
+          <Pressable
+            style={styles.secondary}
+            onPress={async () => {
+              await Clipboard.setStringAsync(mnemonic!);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 2500);
+            }}>
+            <Text style={styles.secondaryText}>
+              {copied ? "copied — clear your clipboard after" : "copy to clipboard"}
+            </Text>
+          </Pressable>
+
+          <Pressable
+            style={styles.primary}
+            onPress={() => {
+              // Questions are chosen AFTER they tap, so screenshotting the quiz
+              // itself doesn't help.
+              setQuiz(buildQuiz(mnemonic!, 3));
+              setAnswers({});
+              setError(null);
+              setStage("quiz");
+            }}>
+            <Text style={styles.primaryText}>I&apos;ve written them down</Text>
+          </Pressable>
+        </>
+      )}
+
+      {stage === "quiz" && (
+        <>
+          <Text style={styles.h1}>Prove it</Text>
+          <Text style={styles.lede}>
+            Three words from the phrase you just saved. This is the only way to know the backup is real before
+            money depends on it.
+          </Text>
+
+          {quiz.map((q) => (
+            <View key={q.index} style={styles.question}>
+              <Text style={styles.qLabel}>Word #{q.index + 1}</Text>
+              <View style={styles.options}>
+                {q.options.map((opt) => {
+                  const selected = answers[q.index] === opt;
+                  return (
+                    <Pressable
+                      key={opt}
+                      style={[styles.option, selected && styles.optionOn]}
+                      onPress={() => setAnswers((a) => ({ ...a, [q.index]: opt }))}>
+                      <Text style={[styles.optionText, selected && styles.optionTextOn]}>{opt}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+          ))}
+
+          {error && <Text style={styles.error}>{error}</Text>}
+
+          <Pressable
+            style={[styles.primary, Object.keys(answers).length < quiz.length && styles.primaryOff]}
+            disabled={busy || Object.keys(answers).length < quiz.length}
+            onPress={confirm}>
+            {busy ? <ActivityIndicator color="#08120e" /> : <Text style={styles.primaryText}>Confirm and continue</Text>}
+          </Pressable>
+
+          <Pressable style={styles.ghost} onPress={() => setStage("write")}>
+            <Text style={styles.ghostText}>show the words again</Text>
           </Pressable>
         </>
       )}
@@ -155,8 +289,8 @@ const styles = StyleSheet.create({
     minHeight: 52,
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 6,
   },
+  primaryOff: { opacity: 0.4 },
   primaryText: { color: "#08120e", fontSize: 16, fontWeight: "700" },
   secondary: {
     backgroundColor: C.bg2,
@@ -168,9 +302,11 @@ const styles = StyleSheet.create({
     borderColor: C.border,
   },
   secondaryText: { color: C.text2, fontSize: 15 },
-  note: { backgroundColor: C.bg2, borderRadius: 10, padding: 14, marginTop: 12 },
+  ghost: { minHeight: 44, alignItems: "center", justifyContent: "center" },
+  ghostText: { color: C.faint, fontSize: 13 },
+  note: { backgroundColor: C.bg2, borderRadius: 12, padding: 14, marginTop: 12 },
   noteText: { color: C.dim, fontSize: 13, lineHeight: 20 },
-  label: { color: C.faint, fontSize: 11, textTransform: "uppercase", letterSpacing: 1, marginTop: 6 },
+  label: { color: C.faint, fontSize: 11, textTransform: "uppercase", letterSpacing: 1 },
   input: {
     backgroundColor: C.bg2,
     borderWidth: 1,
@@ -184,5 +320,44 @@ const styles = StyleSheet.create({
   },
   preview: { color: C.dim, fontSize: 12 },
   previewAddr: { color: C.text2 },
+  grid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  wordCell: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    gap: 7,
+    backgroundColor: C.bg2,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    minWidth: "30%",
+  },
+  wordIndex: { color: C.faint, fontSize: 11, fontVariant: ["tabular-nums"] },
+  word: { color: C.text, fontSize: 15, fontWeight: "600" },
+  warn: {
+    backgroundColor: "rgba(234,179,8,0.12)",
+    borderColor: "rgba(234,179,8,0.35)",
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 13,
+  },
+  warnText: { color: C.gold, fontSize: 13, lineHeight: 19 },
+  question: { gap: 8 },
+  qLabel: { color: C.dim, fontSize: 13, fontWeight: "600" },
+  options: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  option: {
+    backgroundColor: C.bg2,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    minHeight: 44,
+    justifyContent: "center",
+  },
+  optionOn: { borderColor: C.green, backgroundColor: "rgba(52,211,153,0.12)" },
+  optionText: { color: C.text2, fontSize: 14 },
+  optionTextOn: { color: C.green, fontWeight: "600" },
   error: { color: C.red, fontSize: 13, lineHeight: 19 },
 });

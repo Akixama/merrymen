@@ -6,6 +6,7 @@ import * as Clipboard from "expo-clipboard";
 import type { StoredGrant } from "@merrymen/core";
 import { EXPLORER } from "@/net/chainlinks";
 import { feedOrigin, isMock } from "@/net/api";
+import { chatUrl, fetchTelegramStatus, type TelegramStatus } from "@/net/telegram";
 import { forgetOwner, readOwner } from "@/crypto/keystore";
 import { clearGrant, readGrant, secondsLeft } from "@/crypto/grantStore";
 import { accountFromMnemonic } from "@/crypto/mnemonic";
@@ -50,6 +51,21 @@ export default function Settings() {
   const [owner, setOwner] = useState<string | null>(null);
   const [phrase, setPhrase] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [tg, setTg] = useState<TelegramStatus | null>(null);
+
+  useEffect(() => {
+    void fetchTelegramStatus(isMock ? null : feedOrigin).then((r) => {
+      if (r.ok) setTg(r.status);
+    });
+  }, []);
+
+  const openTelegram = useCallback(async () => {
+    if (!tg?.botUsername) return;
+    const url = chatUrl(tg.botUsername, tg.linkCode);
+    // Telegram not installed is a normal state, not an error — the same URL works
+    // in a browser, so fall through to it rather than failing silently.
+    await Linking.openURL(url).catch(() => {});
+  }, [tg]);
 
   useEffect(() => {
     void (async () => {
@@ -149,6 +165,55 @@ export default function Settings() {
           </Pressable>
         </View>
       )}
+
+      {/* ── talking to it ────────────────────────────────────────────────── */}
+      {/*
+        This was its own screen. It is a setup step you do once — link the phone
+        to the bot — and after that the conversation happens in Telegram, so a
+        whole destination in the app for it was a tab you never went back to.
+
+        WHY IT HANDS OFF RATHER THAN BEING A CHAT BOX. There is no chat endpoint:
+        narrateChat lives in the worker, and everything that makes the
+        conversation safe lives beside it — the chat allowlist, the single-use
+        link code, and the confirm-park flow that stops "send 400 USDG to 0x…"
+        executing on one message. A chat box here would reach none of that, or
+        would need it all rebuilt, and a second implementation of a confirmation
+        gate ends up subtly weaker than the first.
+      */}
+      <Text style={styles.section}>talking to it</Text>
+      <View style={styles.card}>
+        {tg === null ? (
+          <Text style={styles.muted}>checking the bridge…</Text>
+        ) : !tg.hasToken ? (
+          /* Nothing this app can do about a missing token — the bot is created in
+             Telegram and its token pasted into the dashboard, and the token
+             deliberately never travels to a client. Say where to go. */
+          <Text style={styles.body}>
+            No bot yet. Create one with @BotFather in Telegram, then paste its token into your dashboard
+            under Settings → Telegram. The token stays on the machine running your agent — it never comes to
+            this phone.
+          </Text>
+        ) : (
+          <>
+            <Text style={styles.body}>
+              Ask it what it&apos;s holding, why it made a trade, or tell it to stop. It answers plain
+              English. Moving money out always takes a second, explicit confirmation and is capped by the
+              wall you signed — one message can never send your funds anywhere.
+            </Text>
+            {!tg.owner && tg.linkCode && (
+              <Text style={styles.muted}>
+                Opening the chat sends your one-time link code, which is what tells your agent to trust this
+                chat. Don&apos;t paste that code anywhere public.
+              </Text>
+            )}
+            <Pressable style={styles.action} disabled={!tg.botUsername} onPress={openTelegram}>
+              <Text style={styles.actionText}>
+                {tg.owner ? "Open the conversation" : "Open Telegram and link"}
+              </Text>
+            </Pressable>
+          </>
+        )}
+      </View>
 
       {/* ── stopping it ──────────────────────────────────────────────────── */}
       <Text style={styles.section}>stopping your agent</Text>

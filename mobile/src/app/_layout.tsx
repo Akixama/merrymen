@@ -52,18 +52,23 @@ export default function RootLayout() {
       <ThemeProvider value={DarkTheme}>
         <StatusBar style="light" />
         <AnimatedSplashOverlay />
-        {/* A Stack at the root, with the tab bar as ONE of its screens. Settings,
-            the probe, recovery and onboarding are pushed over the tabs rather than
-            living inside them — which is what lets them exist without each needing
-            a tab trigger. */}
+        {/*
+          Four screens, and only two you navigate to.
+
+          `index` is the app: balance, holdings and decisions in one list. There
+          is no tab bar, because there was only ever one question — "is my agent
+          OK?" — and three tabs meant three places to look for the answer.
+
+          `settings` is pushed over it and holds everything you set up once: the
+          wall, the Telegram link, your recovery phrase.
+
+          `onboarding` and `recover` are not destinations at all. The owner-key
+          gate sends you to them, and neither is dismissable by gesture: swiping
+          past either one lands on a screen that cannot work.
+        */}
         <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: C.bg } }}>
-          <Stack.Screen name="(tabs)" />
-          <Stack.Screen name="settings" options={{ presentation: 'modal', headerShown: false }} />
-          <Stack.Screen name="chat" options={{ presentation: 'modal' }} />
-          <Stack.Screen name="probe" options={{ presentation: 'modal' }} />
-          {/* Recovery is not dismissable by gesture: it is reached only when the key
-              is already gone, and swiping past it lands on a dashboard that cannot
-              work. */}
+          <Stack.Screen name="index" />
+          <Stack.Screen name="settings" options={{ presentation: 'modal' }} />
           <Stack.Screen name="recover" options={{ gestureEnabled: false }} />
           <Stack.Screen name="onboarding" options={{ gestureEnabled: false }} />
         </Stack>
