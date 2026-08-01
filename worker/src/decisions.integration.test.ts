@@ -55,7 +55,6 @@ describe("decisions substrate — /why joins the trade to its own decision", () 
       amount_usdg: 25,
       status: "landed",
       tx_hash: "0xdeadbeef",
-      created_at: new Date().toISOString(),
       decision_id: id,
     });
 
@@ -79,7 +78,7 @@ describe("decisions substrate — /why joins the trade to its own decision", () 
     setBasis(AGENT, "paper", SYM, buy.basis);
     await addTrade({
       agent_id: AGENT, kind: "swap", target: "0x0000000000000000000000000000000000000002",
-      amount_usdg: 200, status: "paper", created_at: new Date().toISOString(),
+      amount_usdg: 200, status: "paper",
       fill_side: "buy", fill_qty_raw: (2n * SHARE).toString(), fill_price_usd: 100, basis_source: "paper",
     });
     const afterBuy = getBasis(AGENT, "paper", SYM);
@@ -93,7 +92,7 @@ describe("decisions substrate — /why joins the trade to its own decision", () 
     assert.equal(sell.realizedUsdg, usdg6(50));
     await addTrade({
       agent_id: AGENT, kind: "swap", target: "0x0000000000000000000000000000000000000002",
-      amount_usdg: 150, status: "paper", created_at: new Date().toISOString(),
+      amount_usdg: 150, status: "paper",
       fill_side: "sell", fill_qty_raw: SHARE.toString(), fill_price_usd: 150,
       realized_pnl_usdg: 50, basis_source: "paper",
     });
@@ -142,12 +141,12 @@ describe("decisions substrate — /why joins the trade to its own decision", () 
     const A = "0x000000000000000000000000000000000000bbbb";
     await addTrade({
       agent_id: A, kind: "swap", target: "0x0000000000000000000000000000000000000003",
-      amount_usdg: 100, status: "paper", created_at: new Date().toISOString(),
+      amount_usdg: 100, status: "paper",
       fill_side: "sell", realized_pnl_usdg: 25, basis_source: "paper",
     });
     await addTrade({
       agent_id: A, kind: "swap", target: "0x0000000000000000000000000000000000000003",
-      amount_usdg: 100, status: "landed", created_at: new Date().toISOString(),
+      amount_usdg: 100, status: "landed",
       fill_side: "sell", realized_pnl_usdg: -7, basis_source: "quote",
     });
     assert.equal(getRealizedPnlUsdg(A, "paper"), 25, "paper book stands alone");
@@ -163,7 +162,7 @@ describe("decisions substrate — /why joins the trade to its own decision", () 
     assert.equal(r.basisUnknown, true);
     await addTrade({
       agent_id: A, kind: "swap", target: "0x0000000000000000000000000000000000000004",
-      amount_usdg: 888.41, status: "paper", created_at: new Date().toISOString(),
+      amount_usdg: 888.41, status: "paper",
       fill_side: "sell", basis_source: "paper",
       // bookFill leaves this undefined when basisUnknown — the whole point.
       realized_pnl_usdg: r.basisUnknown ? undefined : 888.41,
@@ -179,7 +178,6 @@ describe("decisions substrate — /why joins the trade to its own decision", () 
       amount_usdg: 10,
       status: "rejected",
       reject_rule: "no-route",
-      created_at: new Date().toISOString(),
       // no decision_id — an old row from before this migration
     });
     const why = readWhyEvidence();

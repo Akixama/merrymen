@@ -213,7 +213,22 @@ export interface TradeRow {
   tx_hash?: string;
   status: "landed" | "reverted" | "rejected" | "paper";
   reject_rule?: string;
-  created_at: string;
+  /*
+   * No created_at. The column is `INTEGER NOT NULL DEFAULT (unixepoch())` and
+   * addTrade deliberately omits it from the INSERT, so SQLite stamps the row.
+   *
+   * It used to be a required field here that fourteen call sites dutifully
+   * filled with `new Date().toISOString()` — and every one of those strings was
+   * dropped on the floor, because the column was never in the INSERT list. The
+   * type promised control the code did not have.
+   *
+   * That mattered less than it looked (the stored value was always a correct
+   * integer, and the trailing-24h budget windows have always worked), but it is
+   * a live trap for anything that needs to record when something ACTUALLY
+   * happened rather than when the row was written — a settlement reconciler for
+   * an async brokerage fill, say. Such a thing needs its own column, e.g.
+   * `filled_at`; it must not reach for this one and quietly get nothing.
+   */
   /** Simulation receipt (Uniswap QuoterV2): quoted out, slippage-bounded min, tier, gas. */
   sim_quote_out?: string;
   sim_min_out?: string;

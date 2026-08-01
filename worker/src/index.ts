@@ -839,7 +839,6 @@ async function main() {
         amount_usdg: usdgNum(notional),
         status: "rejected",
         reject_rule: verdict.rule,
-        created_at: new Date().toISOString(),
       });
       return;
     }
@@ -873,7 +872,6 @@ async function main() {
           amount_usdg: usdgNum(notional),
           status: "rejected",
           reject_rule: `paper: ${fill.reason}`,
-          created_at: new Date().toISOString(),
         });
         return;
       }
@@ -922,7 +920,6 @@ async function main() {
         amount_usdg: usdgNum(notional),
         status: "paper",
         sim_quote_out: fill.receipt,
-        created_at: new Date().toISOString(),
         ...(booked ?? {}),
       });
       return;
@@ -973,7 +970,6 @@ async function main() {
             amount_usdg: usdgNum(notional),
             status: "rejected",
             reject_rule: "no-route",
-            created_at: new Date().toISOString(),
           });
           return;
         }
@@ -1070,7 +1066,6 @@ async function main() {
             amount_usdg: usdgNum(notional),
             status: "rejected",
             reject_rule: "no-quote",
-            created_at: new Date().toISOString(),
           });
           return;
         }
@@ -1146,7 +1141,6 @@ async function main() {
         amount_usdg: usdgNum(notional),
         tx_hash: txHash,
         status: "landed",
-        created_at: new Date().toISOString(),
         ...sim,
         ...(booked ?? {}),
       });
@@ -1172,7 +1166,6 @@ async function main() {
         amount_usdg: usdgNum(notional),
         status: "reverted",
         reject_rule: reason,
-        created_at: new Date().toISOString(),
       });
     }
   }
