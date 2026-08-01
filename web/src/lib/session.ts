@@ -54,6 +54,7 @@ import {
   PERMIT2_ABI,
   UNIVERSAL_ROUTER_ABI,
   buildWallPolicies,
+  WALL_POLICY_FLAG,
   usableExtraTokens,
   chainForId,
   robinhoodTestnet,
@@ -151,6 +152,11 @@ async function mintGrant(
     kernelVersion,
     signer: sessionSigner,
     policies,
+    // Execute, but never sign. Without this the session key can produce
+    // ERC-1271 signatures — which a CALL policy cannot constrain — and a
+    // signed Permit2 transfer drains the account with no UserOp at all.
+    // See WALL_POLICY_FLAG in packages/core/src/wall.ts.
+    flag: WALL_POLICY_FLAG,
   });
 
   const account = await createKernelAccount(publicClient, {

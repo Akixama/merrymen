@@ -9,6 +9,7 @@ import {
   GRANT_V4,
   TRADEABLE_V2,
   buildWallPolicies,
+  WALL_POLICY_FLAG,
   robinhoodChain,
   usableExtraTokens,
   type CustomToken,
@@ -84,6 +85,10 @@ export async function signGrant(args: {
     kernelVersion: KERNEL_V3_3,
     signer: sessionSigner,
     policies,
+    // Execute, but never sign — the same flag the dashboard signs with. Both
+    // read it from core so the two signers cannot drift, exactly like the
+    // permission list itself. See WALL_POLICY_FLAG in packages/core/src/wall.ts.
+    flag: WALL_POLICY_FLAG,
   });
 
   say("deriving the smart account");

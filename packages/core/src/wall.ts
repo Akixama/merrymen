@@ -1,4 +1,5 @@
 import { erc20Abi, parseAbi, type Address } from "viem";
+import { PolicyFlags } from "@zerodev/permissions";
 import { CallPolicyVersion, ParamCondition, toCallPolicy } from "@zerodev/permissions/policies";
 import { toRateLimitPolicy, toTimestampPolicy } from "@zerodev/permissions/policies";
 import { UNISWAP_SWAP_ROUTER_ABI, PERMIT2_ABI, UNIVERSAL_ROUTER_ABI } from "./abis";
@@ -32,6 +33,39 @@ const VAULT_ABI = parseAbi([
 ]);
 
 const usdgUnits = (v: number): bigint => BigInt(Math.round(v * 10 ** USDG_DECIMALS));
+
+/**
+ * THE SESSION KEY MAY EXECUTE, BUT IT MAY NOT SIGN.
+ *
+ * Everything else in this file is a CALL policy, and a call policy constrains
+ * UserOp calls. It says nothing about signatures — and the permission validator
+ * implements `signMessage` and `signTypedData` (@zerodev/permissions
+ * toPermissionValidator), so with the library default (FOR_ALL_VALIDATION) the
+ * session key can produce ERC-1271 signatures the account will honour.
+ *
+ * That was a hole straight through the wall, and the worst one, because it
+ * bypasses the wall rather than stretching it. Permit2 is an approved spender
+ * (allowedSpenders) and the stock approvals carry no amount condition, so a
+ * Permit2 `permitTransferFrom` SIGNED by the session key — and submitted by
+ * anyone, from their own EOA — moves tokens to any recipient with no UserOp at
+ * all. No call policy is consulted, the rate limit never fires, and nothing in
+ * the ledger records it. The same shape covers EIP-2612 permits and any
+ * off-chain order that settles against an ERC-1271 signature.
+ *
+ * NOT_FOR_VALIDATE_SIG closes it: the kernel refuses to validate signatures
+ * from this permission, while UserOp execution is untouched. This costs
+ * merrymen nothing — the entire trading path is UserOps, and the v4 route
+ * authorises Permit2 with a CALL (`permit2.approve`, see venues/uniswap-v4.ts)
+ * rather than a signed permit. Grep confirms nothing in worker/, packages/ or
+ * web/src/lib signs with the session account.
+ *
+ * The flag travels ON-CHAIN in the validator's enable data, so the account
+ * itself enforces it — this is not a client-side promise. It is also hashed
+ * into the permission id, which means it only takes effect for grants signed
+ * AFTER this change: existing grants keep the old, permissive wall until
+ * they're re-signed. See the header note about the fleet running a mix.
+ */
+export const WALL_POLICY_FLAG = PolicyFlags.NOT_FOR_VALIDATE_SIG;
 
 /**
  * The only contracts a token approval may ever name as spender.

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { PolicyFlags } from "@zerodev/permissions";
 import test from "node:test";
 import {
   CASH,
@@ -10,6 +11,7 @@ import {
   allowedSpenders,
   buildCallPermissions,
   buildWallPolicies,
+  WALL_POLICY_FLAG,
   usableExtraTokens,
   type GrantCaps,
 } from "../../packages/core/src/index";
@@ -150,4 +152,25 @@ test("policies carry a hard expiry and a daily op limit", () => {
   // Expiry, rate limit, call policy — the key dies on schedule even if every
   // other control fails.
   assert.equal(policies.length, 3);
+});
+
+test("the session key may EXECUTE but may not SIGN (the ERC-1271 hole)", () => {
+  // Every other assertion in this file is about a CALL policy, and a call
+  // policy governs UserOp calls only — it says nothing about signatures. The
+  // permission validator implements signMessage and signTypedData, so on the
+  // library default (FOR_ALL_VALIDATION) the session key can mint ERC-1271
+  // signatures the account honours. That bypasses the wall rather than
+  // stretching it: Permit2 is an approved spender and the stock approvals
+  // carry no amount condition, so a SIGNED permitTransferFrom — submitted by
+  // anyone, from their own EOA — drains tokens with no UserOp, no rate limit,
+  // and no trace in the ledger.
+  //
+  // This costs merrymen nothing: the whole trading path is UserOps, and v4
+  // authorises Permit2 with a CALL (venues/uniswap-v4.ts), not a signed permit.
+  assert.equal(WALL_POLICY_FLAG, PolicyFlags.NOT_FOR_VALIDATE_SIG);
+  assert.notEqual(
+    WALL_POLICY_FLAG,
+    PolicyFlags.FOR_ALL_VALIDATION,
+    "the library default lets the session key sign — never ship it",
+  );
 });
