@@ -157,12 +157,20 @@ export async function runBacktest(cfg: BacktestConfig, bars: readonly Bar[]): Pr
       ops += 1;
       executed += 1;
       if (intent.kind !== "vault-withdraw") {
-        spentToday += intent.kind === "swap" ? intent.notionalUsdg : intent.amountUsdg;
+        spentToday +=
+          intent.kind === "swap" || intent.kind === "equity-order" ? intent.notionalUsdg : intent.amountUsdg;
       }
     }
 
     function applyFill(intent: TradeIntent) {
       if (intent.kind !== "swap") {
+        if (intent.kind === "equity-order" || intent.kind === "transfer") {
+          // The backtest replays the ON-CHAIN strategies against on-chain
+          // history; neither rail's strategies emit these kinds here, and
+          // inventing a fill model for them would be fiction. Counted (above),
+          // never filled.
+          return;
+        }
         if (intent.kind === "vault-deposit") {
           const amt = intent.amountUsdg > cash ? cash : intent.amountUsdg;
           cash -= amt;

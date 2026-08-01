@@ -131,6 +131,88 @@ export function proposalsToIntents(
   return { intents, accepted, rejected };
 }
 
+export interface EquityUniverse {
+  /** Uppercase tickers the strategy may touch. Anything else is rejected. */
+  tickers: ReadonlySet<string>;
+  /** Hard per-proposal ceiling (6dp) — independent of, and beneath, grant caps. */
+  maxPerActionUsdg: bigint;
+  maxActionsPerTick: number;
+}
+
+/**
+ * The equities twin of proposalsToIntents — same boundary, different rail.
+ *
+ * What is deliberately ABSENT is the point: no addresses, no router, no
+ * paused-token set, and none of the 18dp share arithmetic — an equity order
+ * carries a dollar notional and shares are derived at the fill, never proposed.
+ * The model's output stays symbols-and-sizes on both rails; only the validated
+ * structure differs.
+ *
+ * Buys are gated on SETTLED CASH, which the caller supplies — never buying
+ * power, because margin is not money (DESIGN.md §6). Sells are capped at the
+ * held value: you cannot sell what you do not hold, and a clamped sell is
+ * recorded as a clamp, not silently resized.
+ */
+export function proposalsToEquityIntents(
+  proposals: readonly ProposedAction[],
+  universe: EquityUniverse,
+  book: {
+    /** Settled cash, 6dp. NOT buying power. */
+    cashUsdg: bigint;
+    /** Current value of the holding in this symbol, 6dp; 0n = nothing held. */
+    heldValueUsdg: (symbol: string) => bigint;
+  },
+): ValidationResult {
+  const intents: TradeIntent[] = [];
+  const accepted: ProposedAction[] = [];
+  const rejected: string[] = [];
+  let cashLeft = book.cashUsdg;
+
+  for (const [i, p] of proposals.entries()) {
+    if (intents.length >= universe.maxActionsPerTick) {
+      rejected.push(`#${i} ${p.symbol}: max ${universe.maxActionsPerTick} actions per tick reached`);
+      continue;
+    }
+    if (p.action === "hold") continue;
+
+    const ticker = p.symbol.toUpperCase();
+    if (!universe.tickers.has(ticker)) {
+      rejected.push(`#${i} ${p.symbol}: not in the tradable universe`);
+      continue;
+    }
+    if (!Number.isFinite(p.sizeUsdg) || p.sizeUsdg <= 0) {
+      rejected.push(`#${i} ${p.symbol}: size ${p.sizeUsdg} is not a positive number`);
+      continue;
+    }
+    const size = usdg6(p.sizeUsdg);
+    if (size > universe.maxPerActionUsdg) {
+      rejected.push(`#${i} ${p.symbol}: ${p.sizeUsdg} USDG exceeds strategist ceiling`);
+      continue;
+    }
+
+    if (p.action === "buy") {
+      if (size > cashLeft) {
+        rejected.push(`#${i} ${p.symbol}: buy ${p.sizeUsdg} USDG exceeds available cash`);
+        continue;
+      }
+      cashLeft -= size;
+      intents.push({ kind: "equity-order", ticker, side: "buy", notionalUsdg: size });
+      accepted.push(p);
+    } else {
+      const held = book.heldValueUsdg(ticker);
+      if (held <= 0n) {
+        rejected.push(`#${i} ${p.symbol}: nothing held to sell`);
+        continue;
+      }
+      const notional = size < held ? size : held;
+      intents.push({ kind: "equity-order", ticker, side: "sell", notionalUsdg: notional });
+      accepted.push(p);
+    }
+  }
+
+  return { intents, accepted, rejected };
+}
+
 /** Shape-check raw model output into ProposedActions; junk is dropped, not repaired. */
 export function parseProposals(raw: unknown): { actions: ProposedAction[]; malformed: number } {
   if (!raw || typeof raw !== "object" || !Array.isArray((raw as { actions?: unknown }).actions)) {

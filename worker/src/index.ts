@@ -55,6 +55,7 @@ import {
 import { fetchRialtoQuote, resolveRialtoRouter } from "./venues/rialto";
 import { bestRoute, buildTradeCalls, minOutWithSlippage } from "./venues/uniswap";
 import { createAgentExecutor, type AgentExecutor } from "./executor";
+import { createPaperOrderExecutor, type OrderExecutor } from "./executor-order";
 import { readHolderStatus } from "./circle";
 import { accrueAboveHwm } from "./fees";
 import { loadGrantFile } from "./grant";
@@ -177,6 +178,17 @@ interface ActiveAgent {
   agentId: string;
   client: PublicClient;
   executor: AgentExecutor | null;
+  /**
+   * The brokerage rail's executor — a SIBLING of `executor`, never a widening
+   * of it (DESIGN.md §4): an equity order has no calldata and no tx hash, so
+   * the two rails share no type. Null today everywhere: the live implementation
+   * is step 6, gated on a funded Agentic account and tools/list read on the
+   * wire. Equity-order intents fall back to the paper order executor, which is
+   * exactly the posture the plan wants until then — and note the fork is on the
+   * INTENT KIND, not on this field's presence, unlike the EVM rail's
+   * "grant but no signer = paper" convention (paperActive, above).
+   */
+  orderExecutor: OrderExecutor | null;
   limits: AgentLimits;
   /** True only when breakerAddress has CODE on the grant chain — otherwise the
    * on-chain read would silently fail open (.catch → "not tripped"). */
@@ -670,6 +682,10 @@ async function main() {
       agentId,
       client,
       executor,
+      // Live brokerage execution is step 6 of the adapter plan; until the
+      // Agentic account exists and tools/list has been read, equity orders can
+      // only paper-fill.
+      orderExecutor: null,
       limits: limitsFromGrant(grant, watchTokens),
       breakerLive,
     };
@@ -714,6 +730,9 @@ async function main() {
       };
     }
     if (intent.kind === "transfer") return { action: "transfer", sizeUsdg: usdgNum(intent.amountUsdg) };
+    if (intent.kind === "equity-order") {
+      return { action: intent.side, symbol: intent.ticker, sizeUsdg: usdgNum(intent.notionalUsdg) };
+    }
     return { action: intent.kind, sizeUsdg: usdgNum(intent.amountUsdg) };
   }
 
@@ -827,7 +846,12 @@ async function main() {
       nowSec: Math.floor(Date.now() / 1000),
     };
     const verdict = checkPolicy(intent, limits, state, scoutContextFor(intent));
-    const notional = intent.kind === "swap" ? intent.notionalUsdg : intent.amountUsdg;
+    const notional =
+      intent.kind === "swap" || intent.kind === "equity-order" ? intent.notionalUsdg : intent.amountUsdg;
+    // trades.target is NOT NULL and EVM-shaped; the ticker is the honest analog
+    // on the broker rail. Step 5's schema work gives broker rows their own
+    // columns — until then the ticker in `target` keeps the tape readable.
+    const tradeTarget = intent.kind === "equity-order" ? intent.ticker : intent.target;
 
     if (!verdict.ok) {
       console.log(`[policy] REJECTED ${intent.kind}: ${verdict.rule} — ${verdict.detail}`);
@@ -835,10 +859,98 @@ async function main() {
       await recordTrade({
         agent_id: agentId,
         kind: intent.kind,
-        target: intent.target,
+        target: tradeTarget,
         amount_usdg: usdgNum(notional),
         status: "rejected",
         reject_rule: verdict.rule,
+      });
+      return;
+    }
+
+    if (intent.kind === "equity-order") {
+      // ── THE BROKER LANE — paper-only until step 6 ─────────────────────────
+      // Two-stage policy on this rail, and the second stage is the one that
+      // counts: there is no account contract re-checking amounts behind us
+      // (DESIGN.md §5), so checkPolicy runs once on the proposed notional
+      // (above, shared with every rail) and AGAIN on the terms review()
+      // returns — fees and slippage included. place() is unreachable except
+      // downstream of a review that passed both.
+      const orderExec =
+        active.orderExecutor ??
+        createPaperOrderExecutor({
+          priceUsd8Of: (ticker) => lastPrices.get(ticker)?.price8 ?? null,
+          slippageBps: cfg.slippageBps,
+        });
+      const order = { ticker: intent.ticker, side: intent.side, notionalUsdg: intent.notionalUsdg };
+      let review;
+      try {
+        review = await orderExec.review(order);
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        console.log(`[order] review refused ${intent.ticker}: ${reason}`);
+        await addEvent(agentId, "warn", `order review refused: ${reason}`);
+        await recordTrade({
+          agent_id: agentId,
+          kind: intent.kind,
+          target: tradeTarget,
+          amount_usdg: usdgNum(notional),
+          status: "rejected",
+          reject_rule: `review: ${reason}`,
+        });
+        return;
+      }
+
+      const reviewed = checkPolicy({ ...intent, notionalUsdg: review.notionalUsdg }, limits, state);
+      if (!reviewed.ok) {
+        console.log(`[policy] REJECTED reviewed terms for ${intent.ticker}: ${reviewed.rule}`);
+        await addEvent(
+          agentId,
+          "warn",
+          `reviewed order terms exceed the wall: ${reviewed.rule} — ${reviewed.detail}`,
+        );
+        await recordTrade({
+          agent_id: agentId,
+          kind: intent.kind,
+          target: tradeTarget,
+          amount_usdg: usdgNum(review.notionalUsdg),
+          status: "rejected",
+          reject_rule: reviewed.rule,
+        });
+        return;
+      }
+
+      const placed = await orderExec.place(order, review);
+      // Counters move on the REVIEWED notional — the amount the wall approved.
+      spentTodayUsdg += review.notionalUsdg;
+      opsToday += 1;
+      console.log(`[order] ${review.detail} (${placed.status}, ${placed.orderId})`);
+      await addEvent(agentId, "ok", `📜 ${review.detail} — inside the wall, nothing signed`);
+      // Paper fills are exact, so basis and realized P&L are the real thing —
+      // same 'paper' mode and 1e18-per-share convention as the EVM paper path.
+      // The 'brokerage' BasisMode (and the brokerage cash ledger) arrive with
+      // step 5; until then paper equities are basis-tracked, not cash-tracked.
+      const booked = placed.fill
+        ? bookFill(
+            agentId,
+            "paper",
+            {
+              side: placed.fill.side,
+              symbol: placed.fill.symbol,
+              qtyRaw: placed.fill.qtyRaw1e18,
+              cashUsdg: placed.fill.cashUsdg,
+              priceUsd: placed.fill.priceUsd,
+            },
+            "paper",
+          )
+        : null;
+      await recordTrade({
+        agent_id: agentId,
+        kind: intent.kind,
+        target: tradeTarget,
+        amount_usdg: usdgNum(review.notionalUsdg),
+        status: "paper",
+        sim_quote_out: review.detail,
+        ...(booked ?? {}),
       });
       return;
     }

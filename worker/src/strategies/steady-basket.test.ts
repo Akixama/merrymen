@@ -145,7 +145,9 @@ describe("steadyBasketTick", () => {
     const deposit = intents.find((i) => i.kind === "vault-deposit");
     assert.ok(deposit);
     assert.equal(deposit.kind === "vault-deposit" && deposit.amountUsdg, 30_000_000n);
-    assert.equal(deposit.target, VAULT);
+    // Narrowed access: equity orders carry no target, so the union no longer
+    // exposes it un-narrowed — which is the point of the variant's shape.
+    assert.equal(deposit.kind === "vault-deposit" && deposit.target, VAULT);
   });
 
   it("leaves cash alone when at or below the idle floor", () => {

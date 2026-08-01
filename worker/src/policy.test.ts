@@ -413,3 +413,83 @@ describe("checkPolicy — the scout ceiling", () => {
     assert.equal(checkPolicy(swap({ buyToken: CATE }), base, state()).ok, true);
   });
 });
+
+describe("checkPolicy — equity orders (the broker rail)", () => {
+  // On this rail these caps are the ONLY wall: no account contract re-checks
+  // behind them (DESIGN.md §5). Every rule here is load-bearing, not a mirror.
+  const eq = (over: Partial<Extract<TradeIntent, { kind: "equity-order" }>> = {}): TradeIntent => ({
+    kind: "equity-order",
+    ticker: "AAPL",
+    side: "buy",
+    notionalUsdg: 25_000_000n, // 25 USD
+    ...over,
+  });
+  const eqLimits = (over: Partial<AgentLimits> = {}) => limits({ allowedTickers: ["AAPL", "NVDA"], ...over });
+
+  it("approves a legal order — with NO contract target to allowlist", () => {
+    // The variant has no target field, so the target-allowlist rule must not
+    // fire. An empty allowedTargets proves it is genuinely skipped.
+    assert.deepEqual(checkPolicy(eq(), eqLimits({ allowedTargets: [] }), state()), { ok: true });
+  });
+
+  it("rejects a ticker outside the allowlist — the broker rail's asset wall", () => {
+    const v = checkPolicy(eq({ ticker: "GME" }), eqLimits(), state());
+    assert.equal(!v.ok && v.rule, "ticker-allowlist");
+  });
+
+  it("matches tickers case-insensitively — 'aapl' is AAPL, not a bypass", () => {
+    assert.equal(checkPolicy(eq({ ticker: "aapl" }), eqLimits(), state()).ok, true);
+  });
+
+  it("skips the ticker allowlist only when undefined (fixtures), like sellableAssets", () => {
+    assert.equal(checkPolicy(eq({ ticker: "ANYTHING" }), limits(), state()).ok, true);
+  });
+
+  it("rejects a non-positive notional", () => {
+    const v = checkPolicy(eq({ notionalUsdg: 0n }), eqLimits(), state());
+    assert.equal(!v.ok && v.rule, "order-amount");
+  });
+
+  it("caps a single order at the per-trade limit", () => {
+    const v = checkPolicy(eq({ notionalUsdg: 50_000_001n }), eqLimits(), state());
+    assert.equal(!v.ok && v.rule, "per-trade-cap");
+  });
+
+  it("counts SELLS against the caps too — a sell is still an op and still exposure", () => {
+    const v = checkPolicy(eq({ side: "sell", notionalUsdg: 50_000_001n }), eqLimits(), state());
+    assert.equal(!v.ok && v.rule, "per-trade-cap");
+  });
+
+  it("enforces the rolling daily cap", () => {
+    const v = checkPolicy(eq(), eqLimits(), state({ spentTodayUsdg: 490_000_000n }));
+    assert.equal(!v.ok && v.rule, "daily-cap");
+  });
+
+  it("enforces the ops cap and the expiry like every other rail", () => {
+    const ops = checkPolicy(eq(), eqLimits(), state({ opsToday: 48 }));
+    assert.equal(!ops.ok && ops.rule, "ops-cap");
+    const exp = checkPolicy(eq(), eqLimits(), state({ nowSec: NOW + 86_401 }));
+    assert.equal(!exp.ok && exp.rule, "expiry");
+  });
+
+  it("the drawdown breaker fires on equity orders", () => {
+    const v = checkPolicy(
+      eq(),
+      eqLimits(),
+      state({ highWaterMarkUsdg: 1_000_000_000n, equityUsdg: 890_000_000n }),
+    );
+    assert.equal(!v.ok && v.rule, "drawdown-breaker");
+  });
+
+  it("STAGE (b): reviewed terms above the cap are rejected even when the estimate passed", () => {
+    // The two-stage shape from DESIGN.md §5: stage (a) judges the proposed
+    // notional; review() then returns priced terms (fees, slippage), and the
+    // SAME checkPolicy judges those. This pins that a review-inflated notional
+    // is caught — the property the live executor's safety rests on.
+    const proposed = eq({ notionalUsdg: 49_000_000n });
+    assert.equal(checkPolicy(proposed, eqLimits(), state()).ok, true);
+    const reviewed = { ...proposed, notionalUsdg: 51_000_000n } as TradeIntent; // fees pushed it over
+    const v = checkPolicy(reviewed, eqLimits(), state());
+    assert.equal(!v.ok && v.rule, "per-trade-cap");
+  });
+});

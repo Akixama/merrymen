@@ -34,6 +34,13 @@ export interface AgentLimits {
    * no grant to reason about. Never leave it undefined on a live path.
    */
   sellableAssets?: readonly string[];
+  /**
+   * Tickers the agent may trade on the brokerage rail — the broker analog of
+   * allowedAssets, since an equity order has no address for that list to
+   * check. Optional for fixtures only (the sellableAssets rule); on a live
+   * broker path this IS the asset wall, so never leave it undefined there.
+   */
+  allowedTickers?: readonly string[];
   /** Drawdown (bps from high-water mark) at which the breaker pauses the agent. */
   maxDrawdownBps: number;
   /** Unix seconds after which the session key is dead regardless of anything. */
@@ -75,6 +82,20 @@ export type TradeIntent = {
   target: `0x${string}`;
   recipient: `0x${string}`;
   amountUsdg: bigint;
+} | {
+  /**
+   * A brokerage equity order (the Robinhood venue). NO ADDRESS FIELDS on
+   * purpose: there is no contract to target and no calldata to build, and
+   * omitting `target` means the compiler forces every consumer that assumes an
+   * EVM shape to decide what an equity order means to it — nothing falls
+   * through an else-branch built for chains.
+   */
+  kind: "equity-order";
+  /** Uppercase ticker as the broker knows it (AAPL), never an address. */
+  ticker: string;
+  side: "buy" | "sell";
+  /** USD notional, 6dp — same unit as USDG, judged by the same caps. */
+  notionalUsdg: bigint;
 });
 
 export type Verdict =
@@ -138,8 +159,26 @@ export function checkPolicy(
   }
 
   const lc = (a: string) => a.toLowerCase();
-  if (!limits.allowedTargets.map(lc).includes(lc(intent.target))) {
+  // Equity orders have no contract target — their allowlist is tickers, below.
+  if (intent.kind !== "equity-order" && !limits.allowedTargets.map(lc).includes(lc(intent.target))) {
     return { ok: false, rule: "target-allowlist", detail: `target ${intent.target} not allowed` };
+  }
+
+  if (intent.kind === "equity-order") {
+    if (intent.notionalUsdg <= 0n) {
+      return { ok: false, rule: "order-amount", detail: "order notional must be positive" };
+    }
+    // Ticker allowlist — the broker rail's analog of allowedAssets. Optional
+    // for the same reason sellableAssets is (backtests and fixtures have no
+    // grant to reason about); NEVER leave it undefined on a live broker path.
+    // Step 4 of the adapter plan makes it a first-class part of the retyped
+    // limits — until then this is the whole asset wall on this rail.
+    if (limits.allowedTickers) {
+      const up = intent.ticker.toUpperCase();
+      if (!limits.allowedTickers.some((t) => t.toUpperCase() === up)) {
+        return { ok: false, rule: "ticker-allowlist", detail: `ticker ${intent.ticker} not allowed` };
+      }
+    }
   }
 
   if (intent.kind === "swap") {
@@ -224,7 +263,10 @@ export function checkPolicy(
   // sweep (e.g. 80 USDG with a 30-USDG per-trade cap) was rejected every tick
   // while the chain would have accepted it.
   if (intent.kind !== "vault-withdraw") {
-    const notional = intent.kind === "swap" ? intent.notionalUsdg : intent.amountUsdg;
+    // Equity orders count on BOTH sides, like swaps: a sell is still an op and
+    // still market exposure, and on this rail these caps are the only wall.
+    const notional =
+      intent.kind === "swap" || intent.kind === "equity-order" ? intent.notionalUsdg : intent.amountUsdg;
     const isDeposit = intent.kind === "vault-deposit";
     const perOpCap = isDeposit ? limits.dailyUsdg : limits.perTradeUsdg;
     if (notional > perOpCap) {
