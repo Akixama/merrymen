@@ -47,9 +47,10 @@ export default function Terms() {
 
         <h2>3 · You control your own keys and funds</h2>
         <p>
-          merrymen is self-hosted. It runs on your machine, generates and stores keys locally in
+          <strong>For on-chain trading</strong>, merrymen is self-hosted and non-custodial. It runs
+          on your machine, generates and stores keys locally in
           your <code className="inline">~/.merrymen</code> directory, and interacts with public blockchains directly.
-          We never take custody of your keys, funds, or accounts, and we cannot access, freeze,
+          We never take custody of your private keys or on-chain funds, and we cannot access, freeze,
           reverse, or recover them. You are responsible for:
         </p>
         <ul>
@@ -57,6 +58,18 @@ export default function Terms() {
           <li>The permission caps and capabilities you enable, including trading, transfers, and PC control.</li>
           <li>Any transactions your configured agents submit on your behalf.</li>
         </ul>
+        <p>
+          <strong>Connected brokerage accounts are different, and we say so plainly.</strong> If
+          merrymen adds support for a brokerage venue (such as a Robinhood Agentic account) and you
+          choose to connect one: the brokerage — not merrymen — is the custodian of that account
+          and its funds. Connecting authorizes merrymen to hold a revocable OAuth trading token for
+          that account. That token can place trades within the budget you configured at the
+          brokerage; the brokerage&apos;s permission model does not offer a read-only grant, so any
+          &quot;monitor only&quot; behavior is a feature of merrymen&apos;s software, not a technical
+          restriction on the token. Your brokerage login credentials are never seen or stored by
+          merrymen — authorization happens on the brokerage&apos;s own pages — and you can revoke
+          the connection at the brokerage at any time, independently of us.
+        </p>
 
         <h2>4 · Third-party services</h2>
         <p>

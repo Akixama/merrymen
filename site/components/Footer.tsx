@@ -25,7 +25,7 @@ export function Footer() {
               <Logo size={20} />
               <span>merrymen</span>
             </Link>
-            <p>Trading agents you never have to trust. Your keys, your caps, your machine — enforced on-chain.</p>
+            <p>Trading agents you never have to trust. Non-custodial on-chain trading: your keys, your caps, your machine.</p>
           </div>
 
           <div className="foot-col">
