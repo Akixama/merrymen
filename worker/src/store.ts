@@ -138,10 +138,13 @@ function getDb(): DatabaseSync {
     -- sqlite has no bigint — parsed straight back to BigInt on read.
     -- Basis lives per RAW unit, so ERC-8056 splits never disturb it.
     --
-    -- PARTITIONED BY MODE. Paper and live are two different books of two
-    -- different assets (simulated shares vs real tokens); sharing a row would let
-    -- a simulated fill price a real sell, or delete a real position's cost.
-    -- Mirrors how paper_book is already separate from on-chain balances.
+    -- PARTITIONED BY MODE: 'paper', 'live', 'brokerage'. Each is a different
+    -- book of a different asset (simulated shares vs real tokens vs custodial
+    -- shares); sharing a row would let a simulated fill price a real sell, a
+    -- custodial fill price an on-chain position, or delete another book's cost.
+    -- Mirrors how paper_book is already separate from on-chain balances. The
+    -- brokerage book's raw unit is decided when its writer lands (step 5/6 of
+    -- the adapter plan) — the column is unit-agnostic decimal strings either way.
     CREATE TABLE IF NOT EXISTS cost_basis (
       agent_id TEXT NOT NULL,
       mode TEXT NOT NULL,
@@ -192,6 +195,13 @@ function getDb(): DatabaseSync {
     "ALTER TABLE discovered_pools ADD COLUMN decimals INTEGER NOT NULL DEFAULT 18",
     "ALTER TABLE discovered_pools ADD COLUMN liquidity_usd REAL NOT NULL DEFAULT 0",
     "ALTER TABLE discovered_pools ADD COLUMN fdv_usd REAL NOT NULL DEFAULT 0",
+    // Brokerage orders. A broker fill has an order id and no tx hash, and it
+    // fills asynchronously — 'status' stays our coarse verdict enum, while
+    // settlement_status carries the BROKER'S OWN state word verbatim
+    // (submitted/partial/filled/cancelled/…, vocabulary unverified until read
+    // off the wire — DESIGN.md §11 Q5). Both NULL on every EVM and paper row.
+    "ALTER TABLE trades ADD COLUMN order_id TEXT",
+    "ALTER TABLE trades ADD COLUMN settlement_status TEXT",
   ]) {
     try {
       db.exec(ddl);
@@ -217,8 +227,20 @@ export interface TradeRow {
   amount_usdg: number;
   user_op_hash?: string;
   tx_hash?: string;
-  status: "landed" | "reverted" | "rejected" | "paper";
+  /**
+   * Our coarse verdict, not the broker's. 'submitted' is the brokerage rail's
+   * committed-but-not-yet-filled state: the money is already reserved against
+   * the caps (a submitted order is spend the instant it leaves), and step 6's
+   * reconciler resolves it to landed/reverted from the wire. The broker's own
+   * state words live in settlement_status, verbatim — two vocabularies, never
+   * mixed.
+   */
+  status: "landed" | "reverted" | "rejected" | "paper" | "submitted";
   reject_rule?: string;
+  /** Brokerage order id (no tx hash exists on that rail). NULL elsewhere. */
+  order_id?: string;
+  /** The broker's own order-state word, stored verbatim. NULL elsewhere. */
+  settlement_status?: string;
   /*
    * No created_at. The column is `INTEGER NOT NULL DEFAULT (unixepoch())` and
    * addTrade deliberately omits it from the INSERT, so SQLite stamps the row.
@@ -392,8 +414,9 @@ export async function addTrade(row: TradeRow): Promise<void> {
       .prepare(
         `INSERT INTO trades (agent_id, kind, target, sell_token, buy_token, amount_usdg, user_op_hash, tx_hash, status, reject_rule,
                              sim_quote_out, sim_min_out, sim_fee_tier, sim_gas, decision_id,
-                             fill_side, fill_qty_raw, fill_price_usd, realized_pnl_usdg, basis_source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                             fill_side, fill_qty_raw, fill_price_usd, realized_pnl_usdg, basis_source,
+                             order_id, settlement_status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         row.agent_id,
@@ -416,6 +439,8 @@ export async function addTrade(row: TradeRow): Promise<void> {
         row.fill_price_usd ?? null,
         row.realized_pnl_usdg ?? null,
         row.basis_source ?? null,
+        row.order_id ?? null,
+        row.settlement_status ?? null,
       );
   } catch (e) {
     console.error("[store] trade insert failed:", e);
@@ -495,12 +520,20 @@ export async function setPositions(
   }
 }
 
-/** Landed op count in the trailing 24h — seeds the ops-cap counter across restarts. */
+/**
+ * Executed-op count in the trailing 24h — seeds the ops-cap counter across
+ * restarts. 'submitted' counts: a brokerage order that has left the building is
+ * an op whether or not it has filled yet, and excluding it would let a restart
+ * forget in-flight orders and overshoot the ops cap. Step 6's reconciler
+ * resolves each 'submitted' to landed/reverted; a reverted resolution is the
+ * one case the seed then over-counts until the row flips, which is the
+ * conservative direction — budgets may under-spend, never over-spend.
+ */
 export async function getOpsToday(agentId: string): Promise<number> {
   const row = getDb()
     .prepare(
       `SELECT COUNT(*) AS n FROM trades
-       WHERE agent_id = ? AND status IN ('landed', 'paper') AND created_at > unixepoch() - 86400`,
+       WHERE agent_id = ? AND status IN ('landed', 'paper', 'submitted') AND created_at > unixepoch() - 86400`,
     )
     .get(agentId) as { n: number } | undefined;
   return row?.n ?? 0;
@@ -532,7 +565,7 @@ export async function getSpentTodayUsdg(agentId: string): Promise<number> {
   const row = getDb()
     .prepare(
       `SELECT COALESCE(SUM(amount_usdg), 0) AS spent FROM trades
-       WHERE agent_id = ? AND status IN ('landed', 'paper') AND kind != 'vault-withdraw'
+       WHERE agent_id = ? AND status IN ('landed', 'paper', 'submitted') AND kind != 'vault-withdraw'
          AND created_at > unixepoch() - 86400`,
     )
     .get(agentId) as { spent: number } | undefined;
@@ -618,8 +651,12 @@ export function clearChatTurns(chatId: number): void {
 
 // ── cost basis — weighted-average, per symbol (see basis.ts) ──────────────
 
-/** Paper and live keep separate books — see the cost_basis DDL. */
-export type BasisMode = "paper" | "live";
+/**
+ * Paper, live, and brokerage keep separate books — see the cost_basis DDL.
+ * 'brokerage' exists so a custodial fill can never price an on-chain
+ * position's sell (or vice versa); its writer lands with step 6.
+ */
+export type BasisMode = "paper" | "live" | "brokerage";
 
 /** Load a symbol's basis for one mode. Missing row = a flat position, not an error. */
 export function getBasis(agentId: string, mode: BasisMode, symbol: string): { qtyRaw: bigint; costUsdg: bigint } {
@@ -676,7 +713,15 @@ export function basisSymbols(agentId: string, mode: BasisMode): string[] {
  * carry NULL so they're excluded rather than counted as cost-free profit.
  */
 export function getRealizedPnlUsdg(agentId: string, mode: BasisMode, sinceUnix?: number): number {
-  const status = mode === "paper" ? "paper" : "landed";
+  // Exhaustive on purpose: a mode with no status mapping would read ZERO P&L
+  // everywhere, silently — the exact failure the design doc calls out.
+  // 'brokerage' maps to 'landed' like 'live': a settled broker fill is as real
+  // as a landed swap, and 'submitted' rows are excluded here because an
+  // unfilled order has no realized anything. Cross-talk with 'live' is
+  // impossible at the query level: broker agents live in the rh: id space, so
+  // one agent_id never carries both kinds of landed row.
+  const statusByMode: Record<BasisMode, string> = { paper: "paper", live: "landed", brokerage: "landed" };
+  const status = statusByMode[mode];
   try {
     const row = (
       sinceUnix
