@@ -19,6 +19,12 @@ function getDb(): DatabaseSync {
   db = new DatabaseSync(DB_FILE);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(`
+    /* agent_id (= smart_account here) threads EVERY per-agent table: trades,
+       decisions, positions, cost_basis, equity, fee_accruals. On the EVM rail
+       it is the ERC-4337 smart-account address; on the broker rail it is the
+       namespaced "rh:<account_number>" from venues/robinhood-id.ts — the
+       prefix exists so the two id spaces can never collide, and a broker row
+       can never key into an on-chain agent's basis, HWM, or fee ledger. */
     CREATE TABLE IF NOT EXISTS agents (
       smart_account TEXT PRIMARY KEY,
       name TEXT NOT NULL DEFAULT 'Robin',

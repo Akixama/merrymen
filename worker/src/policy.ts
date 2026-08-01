@@ -1,9 +1,24 @@
 /**
- * Deterministic policy layer — the half of the permission wall that lives off-chain.
- * It MIRRORS (never replaces) the on-chain Kernel session-key policies: the
- * on-chain caps are the hard wall; this layer exists to reject bad intents cheaply
- * and log WHY, before gas is spent. If this code and the on-chain policy ever
- * disagree, the on-chain policy wins and that divergence is a bug to alert on.
+ * Deterministic policy layer — and its posture DEPENDS ON THE RAIL, which is
+ * the single most important thing to understand about this file.
+ *
+ * ON THE EVM RAIL (swap / vault / transfer) it is a MIRROR of the on-chain
+ * Kernel session-key policies: the on-chain caps are the hard wall; this layer
+ * exists to reject bad intents cheaply and log WHY, before gas is spent. If
+ * this code and the on-chain policy ever disagree, the on-chain policy wins
+ * and that divergence is a bug to alert on. A mirror must never be stricter
+ * than the chain — a stricter mirror rejects trades the wall would allow.
+ *
+ * ON THE BROKER RAIL (equity-order) there is NO on-chain policy to mirror.
+ * Robinhood's Agentic account is custodial, its OAuth scope cannot be
+ * restricted below full trading, and nothing re-checks amounts after this
+ * function returns ok — so here this layer IS the wall, and the posture
+ * inverts: deliberately conservative, because there is no backstop to defer
+ * to. The only enforcement beneath it is Robinhood's own account-level
+ * reserved budget. This is why processIntent runs checkPolicy TWICE on that
+ * rail — once on the proposed notional and again on the terms review()
+ * returns — where the EVM rail relies on the account contract for the
+ * re-check. (spikes/robinhood-mcp/DESIGN.md §5.)
  *
  * Nothing in this file may call an LLM, read agent memory, or take a string that
  * originated from a model. Intents come in typed; verdicts go out typed.

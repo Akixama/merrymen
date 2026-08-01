@@ -9,6 +9,7 @@ import {
   readBrokerQuotes,
   usdToPrice8,
 } from "./venues/robinhood-feed";
+import { brokerAgentId, isBrokerAgentId } from "./venues/robinhood-id";
 
 /**
  * The broker feed parsers, tested for the one property that matters: they FAIL
@@ -131,5 +132,26 @@ describe("readBrokerQuotes end-to-end through the real McpClient", () => {
     const { quotes, skipped } = await readBrokerQuotes(client, ["NVDA"]);
     assert.equal(skipped.length, 0);
     assert.deepEqual(quotes.get("NVDA"), { price8: 17_150_000_000n, stale: false, source: "broker" });
+  });
+});
+
+describe("brokerAgentId — the namespaced identity broker rows key off", () => {
+  it("prefixes and preserves the account number", () => {
+    assert.equal(brokerAgentId("5RH12345"), "rh:5RH12345");
+    assert.equal(brokerAgentId("  5RH12345  "), "rh:5RH12345", "whitespace trimmed, not rejected");
+  });
+
+  it("can never collide with an 0x agent id", () => {
+    // The property every per-agent table depends on: a broker id keys its own
+    // rows and can never reach an on-chain agent's basis, HWM, or fee ledger.
+    assert.ok(isBrokerAgentId(brokerAgentId("ACCT1")));
+    assert.ok(!isBrokerAgentId("0x000000000000000000000000000000000000a9e7"));
+    assert.ok(!brokerAgentId("ACCT1").startsWith("0x"));
+  });
+
+  it("refuses shapes that suggest schema drift rather than sanitizing them", () => {
+    for (const bad of ["", "  ", "acct/../../etc", "rh:already-prefixed:no", "a".repeat(65), "acct num"]) {
+      assert.throws(() => brokerAgentId(bad), /unexpected shape/, JSON.stringify(bad));
+    }
   });
 });
