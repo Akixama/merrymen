@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { PublicClient } from "viem";
-import { positionValueUsdg, readPositions } from "./positions";
+import { positionValueUsdg, readPositions, valuationMultiplierFor } from "./positions";
 import type { StockToken } from "../../packages/core/src/index";
 
 const ONE = 10n ** 18n; // 1.0 in both raw-balance (18dp) and multiplier terms
@@ -321,5 +321,29 @@ describe("readPositions — a pool price is per raw token, so the multiplier mus
     const prices = new Map([["AAPL", { price8: usd(20), stale: false, source: "pool" as const }]]);
     const r = await readPositions(client([good(ONE), good(SPLIT)]), ACCT, [AAPL], prices);
     assert.equal(r.positions[0]?.uiMultiplier, SPLIT, "the fact is preserved for display");
+  });
+});
+
+describe("valuationMultiplierFor — the unit each price source implies", () => {
+  const SPLIT = 2n * 10n ** 18n; // uiMultiplier after a 2-for-1
+
+  it("chainlink applies the ERC-8056 multiplier; pool and broker do not", () => {
+    assert.equal(valuationMultiplierFor("chainlink", SPLIT), SPLIT);
+    assert.equal(valuationMultiplierFor("pool", SPLIT), ONE);
+    assert.equal(valuationMultiplierFor("broker", SPLIT), ONE);
+  });
+
+  it("a broker quote after a 2-for-1 split must NOT double-count (the hazard the old ternary had)", () => {
+    // Broker share counts are already split-adjusted and the broker price is per
+    // that share. The pre-refactor code (`source === "pool" ? 1e18 : uiMultiplier`)
+    // dropped every non-pool source into the Chainlink arm — so a broker quote
+    // would have inherited the multiplier and read 2x after a split, ratcheting
+    // a phantom high-water mark and eventually tripping the breaker.
+    const value = positionValueUsdg({
+      rawBalance: ONE, // 1 share as the broker counts it
+      uiMultiplier: valuationMultiplierFor("broker", SPLIT), // SPLIT=2.0 must be ignored
+      price8: usd(250), // post-split per-share price
+    });
+    assert.equal(value, 250_000_000n, "$250, not the double-counted $500");
   });
 });

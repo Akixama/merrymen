@@ -108,9 +108,11 @@ export function readPositions(): string {
     if (!rows.length) return "📖 no open positions — all in cash/vault.";
     const body = rows
       .map((r) => {
-        // A pool-priced holding is a weaker claim than a Chainlink-priced one.
-        // Marking it inline means the owner never has to remember which is which.
-        const src = r.price_source === "pool" ? " (pool px)" : "";
+        // A pool- or broker-priced holding is a different evidential claim than
+        // a Chainlink-priced one. Marking it inline means the owner never has
+        // to remember which is which.
+        const src =
+          r.price_source === "pool" ? " (pool px)" : r.price_source === "broker" ? " (broker px)" : "";
         const stale = r.price_stale ? " (px 24/5)" : "";
         return `• ${esc(r.symbol)}: $${r.value_usdg.toFixed(2)}${stale}${src} @ $${r.price_usd.toFixed(2)}`;
       })

@@ -448,7 +448,7 @@ export async function setPositions(
     uiMultiplier: bigint;
     priceUsd: number;
     priceStale: boolean;
-    /** 'chainlink' or 'pool' — see the price_source migration. */
+    /** 'chainlink', 'pool' or 'broker' — see the price_source migration. */
     priceSource: string;
     valueUsdg: number;
   }[],

@@ -63,20 +63,26 @@ export interface CustomToken {
 /**
  * A price AND where it came from.
  *
- * Chainlink and a Uniswap pool are not the same evidential quality: one is an
- * external feed that costs real money to move, the other is a pool balance. Both
- * end up as an 8dp number, and once they're both just numbers nothing downstream
- * can tell them apart — so the provenance travels with the price.
+ * Chainlink, a Uniswap pool, and a brokerage quote are not the same evidential
+ * quality: the first is an external feed that costs real money to move, the
+ * second is a pool balance, the third is the venue's own last-trade print. All
+ * three end up as an 8dp number, and once they're just numbers nothing
+ * downstream can tell them apart — so the provenance travels with the price.
  *
  * `source` is REQUIRED, never optional with a default. A field someone forgot to
- * set must not silently read as "trustworthy".
+ * set must not silently read as "trustworthy". It is also load-bearing for
+ * VALUATION, not just display: chainlink quotes USD per ERC-8056 UI share (the
+ * multiplier applies), while pool and broker quote the market's own unit, which
+ * already reflects any split (the multiplier must NOT apply) — see
+ * worker/src/positions.ts, valuationMultiplierFor.
  */
 export interface PriceQuote {
   /** USD per whole token, 8dp — the same unit Chainlink feeds emit. */
   price8: bigint;
   /** Chainlink feed older than 2h. Expected on weekends (feeds run 24/5). */
   stale: boolean;
-  source: "chainlink" | "pool";
+  /** "broker" = Robinhood get_equity_quotes on the Agentic-account rail. */
+  source: "chainlink" | "pool" | "broker";
   /** For pool prices: route + depth, so a human can judge the number. */
   detail?: string;
 }

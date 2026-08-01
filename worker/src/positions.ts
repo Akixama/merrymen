@@ -92,6 +92,37 @@ export interface PositionsRead {
 export const UI_MULTIPLIER_ONE = 10n ** 18n;
 
 /**
+ * Which multiplier a price source's unit implies.
+ *
+ * A Chainlink feed quotes USD per ERC-8056 UI SHARE, so the multiplier converts
+ * raw → shares before pricing. A pool quotes USD per WHOLE ERC-20 TOKEN, and a
+ * broker quotes USD per SHARE AS THE BROKER COUNTS IT — in both cases the
+ * market's own unit, which already reflects any split. Applying the multiplier
+ * to those counts the split twice: after a 2-for-1 the position reads double,
+ * the high-water mark ratchets to a peak that never happened, a performance fee
+ * accrues on it, and the drawdown breaker trips when the phantom unwinds.
+ *
+ * An exhaustive switch on purpose. This used to be `source === "pool" ? 1e18 :
+ * uiMultiplier`, where every FUTURE source silently fell into the Chainlink arm
+ * — which is exactly the wrong default for every source added since, "broker"
+ * included. Now a new member of the union fails to compile until someone
+ * decides its unit here, on this comment, deliberately.
+ */
+export function valuationMultiplierFor(source: PriceQuote["source"], uiMultiplier: bigint): bigint {
+  switch (source) {
+    case "chainlink":
+      return uiMultiplier;
+    case "pool":
+    case "broker":
+      return UI_MULTIPLIER_ONE;
+    default: {
+      const never: never = source;
+      throw new Error(`unhandled price source: ${String(never)}`);
+    }
+  }
+}
+
+/**
  * Just the multipliers, for callers with no on-chain balance to read.
  *
  * Paper mode needs these and can't get them from readPositions: it never queries
@@ -210,14 +241,7 @@ export async function readPositions(
     }
 
     const decimals = t.decimals ?? 18;
-    // A Chainlink feed quotes USD per ERC-8056 UI SHARE, so the multiplier
-    // converts raw → shares before pricing. A pool quotes USD per WHOLE ERC-20
-    // TOKEN — the market's own unit, which already reflects any split. Applying
-    // the multiplier to a pool price counts the split twice: after a 2-for-1 the
-    // position reads double, the high-water mark ratchets to a peak that never
-    // happened, a performance fee accrues on it, and the drawdown breaker trips
-    // when the phantom unwinds.
-    const valuationMultiplier = price.source === "pool" ? 10n ** 18n : uiMultiplier;
+    const valuationMultiplier = valuationMultiplierFor(price.source, uiMultiplier);
     positions.push({
       symbol: t.symbol,
       token: t.address,
