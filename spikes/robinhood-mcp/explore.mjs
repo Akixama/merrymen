@@ -132,7 +132,7 @@ function waitForCode(expectedState) {
     setTimeout(() => {
       server.close();
       reject(new Error("timed out waiting for the browser redirect"));
-    }, 5 * 60_000);
+    }, 10 * 60_000);
   });
 }
 

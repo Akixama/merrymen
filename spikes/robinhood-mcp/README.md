@@ -31,10 +31,30 @@ finishing.
 | Scopes | `internal` (one scope, all-or-nothing) |
 | Redirect | loopback (`http://127.0.0.1:…`) accepted |
 
-**The finding that matters:** dynamic client registration (RFC 7591) is open and
-loopback redirects are accepted, so a self-hosted headless worker can mint its
-own `client_id` with no partnership, no API-key application and no allowlist.
-That was the main unknown, and the answer is yes.
+**On "dynamic registration" — softer than it first looked.** The `/register`
+endpoint returns HTTP 200 but is effectively a no-op: it echoes back
+`client_name: "Robinhood Trading"` and the **same** `client_id`
+(`LtLiNmbs9owbYfWgBlC68Z2VujIPuvGoAiSYr8xW`) for every request, regardless of
+the name, port or redirect host sent. It is not RFC 7591 issuing a per-client
+identity — it is one shared public client that every agent uses. Good news for
+connecting (the id is a constant, nothing to apply for); it also means the
+OAuth `client_id` carries zero agent identity, and the consent screen cannot
+show which agent is being authorized.
+
+**Whether a loopback redirect actually works at authorize-time is UNVERIFIED.**
+Registration echoing our `redirect_uri` back proves nothing — it ignores its
+inputs. The authorization endpoint returns the same 8 KB login SPA for a
+loopback redirect and for a garbage one, so `redirect_uri` is validated later in
+the flow, past a point this spike could reach unauthenticated. It could still be
+rejected as a mismatch against the shared client's real registered URIs.
+
+**Where it actually stopped: the account gate.** Completing authorization
+requires an **Agentic account** to already exist — a separate Robinhood product
+set up via desktop onboarding, gated behind a primary account in good standing
+and a reserved budget. With no such account the consent screen sends you to set
+one up instead of granting scope, so the flow never redirects and the spike
+times out cleanly. The live `tools/list` is therefore still unread; it needs a
+funded Agentic account, then a re-run of the exact same command.
 
 **Two things worth knowing before building on it.**
 
