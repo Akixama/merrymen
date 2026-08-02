@@ -74,13 +74,60 @@ export const WALL_POLICY_FLAG = PolicyFlags.NOT_FOR_VALIDATE_SIG;
  * tokens directly. The account approves PERMIT2, and Permit2 grants the router a
  * bounded, expiring allowance — so the router itself is approved for nothing.
  */
-export function allowedSpenders(): Address[] {
+export function allowedSpenders(allowRialto = false): Address[] {
   return [
-    RIALTO.routerSnapshot as Address,
+    // Rialto is OPT-IN, and off by default — see WallOptions.allowRialto. An
+    // approved spender can pull whatever it was approved for, and the stock
+    // approvals carry no amount condition, so an unused router in this list is
+    // not free: it is a standing licence to move every share the agent holds.
+    ...(allowRialto ? [RIALTO.routerSnapshot as Address] : []),
     UNISWAP.swapRouter02 as Address,
     MORPHO.steakhouseUsdgVault as Address,
     UNISWAP.permit2 as Address,
   ];
+}
+
+/**
+ * The owner's choices that widen the wall beyond its secure default.
+ *
+ * Every field here defaults to the CLOSED position. That is the lesson of the
+ * signature hole and the unpinned recipients: a default that happens to be
+ * permissive survives for months because nothing fails. So the default wall
+ * trades, and does nothing else.
+ */
+export interface WallOptions {
+  extraTokens?: readonly CustomToken[];
+  /**
+   * Addresses USDG may be transferred OUT to.
+   *
+   * EMPTY (the default) means the wall carries NO transfer permission at all —
+   * a compromised agent cannot move USDG to an address, full stop.
+   *
+   * This closes the largest remaining hole. The recipient used to be free-form
+   * because chat transfers are user-confirmed, so the amount was the only
+   * on-chain bound — but that bound is PER CALL, and the daily USDG cap is
+   * enforced only off-chain, in the worker. A compromised worker ignores its
+   * own counter, so the true on-chain ceiling was perTradeUsdg × maxOpsPerDay
+   * every day until expiry: 2,400 USDG/day at the default preset. "Bounded"
+   * in the sense that draining the account took a fortnight.
+   *
+   * Registering addresses is the same re-sign-to-widen model the token
+   * allowlist already uses, and for the same reason: the wall cannot grow by
+   * itself. Moving money out to an UNREGISTERED address remains possible any
+   * time via the owner key (`merrymen recover`), which is not bound by the
+   * wall — so this removes an agent's power, not the owner's.
+   */
+  withdrawalAddresses?: readonly Address[];
+  /**
+   * The Rialto meta-router. OFF by default.
+   *
+   * Its calldata comes from a quote API, so there is no shape for a call
+   * policy to constrain — target-scoping is the entire control, which means
+   * granting it is granting "call anything on this contract". That is
+   * defensible only if you actually use it, and it needs an integrator API key
+   * to work at all, so the default is off and the risk is opt-in.
+   */
+  allowRialto?: boolean;
 }
 
 /**
@@ -126,11 +173,16 @@ export function buildCallPermissions(
    * here, and then assert the final account matches.
    */
   smartAccount: Address,
-  extraTokens: readonly CustomToken[] = [],
+  opts: WallOptions = {},
 ) {
-  const spenders = allowedSpenders();
-  const extras = usableExtraTokens(extraTokens);
+  const spenders = allowedSpenders(opts.allowRialto);
+  const extras = usableExtraTokens(opts.extraTokens);
   const self = { condition: ParamCondition.EQUAL, value: smartAccount } as const;
+  // Deduped and lowercased so a list with the same address twice doesn't bloat
+  // the on-chain policy, and a case difference can't read as a second address.
+  const withdrawals = [
+    ...new Set((opts.withdrawalAddresses ?? []).map((a) => a.toLowerCase() as Address)),
+  ];
 
   return [
     {
@@ -171,22 +223,39 @@ export function buildCallPermissions(
           args: [{ condition: ParamCondition.ONE_OF, value: spenders }, null],
         }) as const,
     ),
-    {
-      // USDG out of the wall. The recipient is free-form because chat transfers
-      // are user-confirmed, but the AMOUNT is capped per call on-chain. Daily
-      // budgets bound it further, worker-side.
-      target: CASH.USDG as Address,
-      valueLimit: 0n,
-      abi: erc20Abi,
-      functionName: "transfer",
-      args: [null, { condition: ParamCondition.LESS_THAN_OR_EQUAL, value: usdgUnits(caps.perTradeUsdg) }],
-    },
-    {
-      // Rialto router: target-scoped only, since its calldata comes from the
-      // quote API and cannot be constrained by shape.
-      target: RIALTO.routerSnapshot as Address,
-      valueLimit: 0n,
-    },
+    // USDG out of the wall — ONLY to addresses the owner registered, and only
+    // one trade's worth per call. Absent entirely when the list is empty, which
+    // is the default: no registered destination, no power to send.
+    //
+    // The recipient used to be free-form, leaving the per-call amount as the
+    // only on-chain bound — and since the daily USDG cap lives off-chain in the
+    // worker, a compromised worker's real ceiling was perTradeUsdg ×
+    // maxOpsPerDay per day, every day, until expiry.
+    ...(withdrawals.length > 0
+      ? [
+          {
+            target: CASH.USDG as Address,
+            valueLimit: 0n,
+            abi: erc20Abi,
+            functionName: "transfer",
+            args: [
+              { condition: ParamCondition.ONE_OF, value: withdrawals },
+              { condition: ParamCondition.LESS_THAN_OR_EQUAL, value: usdgUnits(caps.perTradeUsdg) },
+            ],
+          } as const,
+        ]
+      : []),
+    // Rialto router: target-scoped ONLY, because its calldata comes from a
+    // quote API and has no shape to constrain — so this permission is "call
+    // anything on this contract". Opt-in for that reason; absent by default.
+    ...(opts.allowRialto
+      ? [
+          {
+            target: RIALTO.routerSnapshot as Address,
+            valueLimit: 0n,
+          } as const,
+        ]
+      : []),
     {
       // Uniswap SwapRouter02: exactInputSingle only, AND the output must land
       // in the agent's own account.
@@ -282,9 +351,8 @@ export function buildWallPolicies(args: {
   caps: GrantCaps;
   /** The agent's own account — see buildCallPermissions. Required, never defaulted. */
   smartAccount: Address;
-  extraTokens?: readonly CustomToken[];
   now?: number;
-}) {
+} & WallOptions) {
   const now = args.now ?? Math.floor(Date.now() / 1000);
   const expiresAt = now + args.caps.expiryDays * 86_400;
 
@@ -295,7 +363,11 @@ export function buildWallPolicies(args: {
     toRateLimitPolicy({ count: args.caps.maxOpsPerDay, interval: 86_400 }),
     toCallPolicy({
       policyVersion: CallPolicyVersion.V0_0_4,
-      permissions: buildCallPermissions(args.caps, args.smartAccount, args.extraTokens) as never,
+      permissions: buildCallPermissions(args.caps, args.smartAccount, {
+        extraTokens: args.extraTokens,
+        withdrawalAddresses: args.withdrawalAddresses,
+        allowRialto: args.allowRialto,
+      }) as never,
     }),
   ];
 

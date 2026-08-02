@@ -305,7 +305,9 @@ merrymen kill       # kill switch — destroys the grant`}
           A first-party agent is custodial by construction — their servers, their keys, their
           discretion; the safety story is a terms-of-service. merrymen inverts the trust: the agent
           runs on <em>your</em> machine, the keys never leave it, and the caps live in your account
-          contract on-chain, so even a fully compromised agent cannot spend past the wall. And you
+          contract on-chain — so a compromised agent can trade inside the wall, but cannot sign on
+          your behalf, cannot send funds to an address you never registered, and cannot touch your
+          ETH. And you
           can check, not believe: the dashboard links the account contract, session key, and every
           cap to the block explorer, and its <strong>prove the wall</strong> button fires malicious
           intents — an oversized trade, a &ldquo;send everything to 0xevil&rdquo; transfer, an

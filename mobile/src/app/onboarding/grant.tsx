@@ -102,9 +102,10 @@ export default function Grant() {
     <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingTop: topPad, paddingBottom: bottomPad }]}>
       <Text style={styles.h1}>The permission wall</Text>
       <Text style={styles.lede}>
-        You&apos;re about to give your agent a key that can trade — and only trade, inside these limits. The
-        limits live in the account contract on-chain, not in this app, so even a completely compromised agent
-        cannot spend past them.
+        You&apos;re about to give your agent a key that can trade — and only trade, inside these limits. They
+        live in the account contract on-chain, not in this app: a compromised agent can trade inside the
+        wall, but it can&apos;t sign anything in your name, can&apos;t send your funds to an address you
+        didn&apos;t register, and can&apos;t touch your ETH.
       </Text>
 
       <Text style={styles.section}>temperament</Text>

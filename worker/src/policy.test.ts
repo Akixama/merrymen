@@ -493,3 +493,55 @@ describe("checkPolicy — equity orders (the broker rail)", () => {
     assert.equal(!v.ok && v.rule, "per-trade-cap");
   });
 });
+
+describe("checkPolicy — the withdrawal allowlist mirrors the on-chain pin", () => {
+  const xfer = (recipient = "0x9999999999999999999999999999999999999999"): TradeIntent => ({
+    kind: "transfer",
+    target: USDG,
+    recipient: recipient as `0x${string}`,
+    amountUsdg: 10_000_000n,
+  });
+  // Hex letters on purpose: a checksummed (EIP-55) address differs from its
+  // lowercase form only in the BODY — the "0x" prefix stays lowercase, which is
+  // why comparing whole strings case-blind is the right test, not toUpperCase().
+  const A = "0xabcdef1111111111111111111111111111111111";
+
+  it("an EMPTY list means the wall has no transfer permission at all", () => {
+    const v = checkPolicy(xfer(), limits({ withdrawalAddresses: [] }), state());
+    assert.equal(!v.ok && v.rule, "transfer-not-permitted");
+    // The message has to say what to do — an owner with stuck funds needs the
+    // owner-key path, not a policy code.
+    assert.match(!v.ok ? v.detail : "", /recover/);
+  });
+
+  it("rejects a recipient that is not on the list", () => {
+    const v = checkPolicy(xfer(), limits({ withdrawalAddresses: [A] }), state());
+    assert.equal(!v.ok && v.rule, "transfer-recipient-allowlist");
+  });
+
+  it("allows a registered recipient, case-insensitively", () => {
+    assert.equal(checkPolicy(xfer(A), limits({ withdrawalAddresses: [A] }), state()).ok, true);
+    const checksummed = `0x${A.slice(2).toUpperCase()}`;
+    assert.equal(
+      checkPolicy(xfer(checksummed), limits({ withdrawalAddresses: [A] }), state()).ok,
+      true,
+      "an address is an address whatever its casing",
+    );
+  });
+
+  it("UNDEFINED means a pre-allowlist grant, and must NOT be treated as empty", () => {
+    // Such a grant genuinely carries the old free-form permission. A mirror
+    // stricter than the chain rejects trades the wall would have allowed —
+    // the one thing this file's contract forbids.
+    assert.equal(checkPolicy(xfer(), limits(), state()).ok, true);
+  });
+
+  it("the amount cap still applies on top of the destination pin", () => {
+    const v = checkPolicy(
+      { ...xfer(A), amountUsdg: 50_000_001n } as TradeIntent,
+      limits({ withdrawalAddresses: [A] }),
+      state(),
+    );
+    assert.equal(!v.ok && v.rule, "per-trade-cap");
+  });
+});

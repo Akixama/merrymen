@@ -56,14 +56,21 @@ const perms = () => buildCallPermissions(CAPS, SELF) as unknown as Perm[];
 const find = (target: string, fn?: string) =>
   perms().filter((p) => p.target.toLowerCase() === target.toLowerCase() && (fn === undefined || p.functionName === fn));
 
-test("the four allowed spenders, and universalRouter is NOT one of them", () => {
+test("the default spenders exclude Rialto, and universalRouter is never one", () => {
+  // Rialto is opt-in: an approved spender can pull whatever it was approved
+  // for, and the stock approvals carry no amount condition, so listing an
+  // unused router is a standing licence over every share the agent holds.
   const s = allowedSpenders().map((a) => a.toLowerCase());
   assert.deepEqual(s, [
-    RIALTO.routerSnapshot.toLowerCase(),
     UNISWAP.swapRouter02.toLowerCase(),
     MORPHO.steakhouseUsdgVault.toLowerCase(),
     UNISWAP.permit2.toLowerCase(),
   ]);
+  assert.equal(
+    allowedSpenders(true)[0]!.toLowerCase(),
+    RIALTO.routerSnapshot.toLowerCase(),
+    "opting in adds Rialto, and only then",
+  );
   // v4 never pulls tokens directly — Permit2 does, on the router's behalf, with a
   // bounded expiring allowance. Approving the router itself would skip that bound.
   assert.equal(s.includes(UNISWAP.universalRouter.toLowerCase()), false, "the UniversalRouter must never be an approved spender");
@@ -73,19 +80,35 @@ test("USDG approve is capped at ONE TRADE and restricted to the allowed spenders
   const [p] = find(CASH.USDG, "approve");
   assert.ok(p, "USDG approve permission must exist");
   const [spender, amount] = p.args as [{ condition: number; value: string[] }, { condition: number; value: bigint }];
-  assert.equal(spender.value.length, 4, "spender list must be the four allowed contracts");
+  assert.equal(spender.value.length, 3, "the three default spenders — Rialto is opt-in");
   // The cap is per TRADE, not per day. Using dailyUsdg here would let one approval
   // authorise ten trades' worth.
   assert.equal(amount.value, usdg(CAPS.perTradeUsdg));
 });
 
-test("USDG transfer out is capped per call at the per-trade size", () => {
-  const [p] = find(CASH.USDG, "transfer");
-  assert.ok(p, "USDG transfer permission must exist");
-  const [recipient, amount] = p.args as [null, { value: bigint }];
-  // Recipient is intentionally unconstrained — chat transfers are user-confirmed —
-  // so the AMOUNT is the only on-chain bound and it must be present.
-  assert.equal(recipient, null);
+test("by DEFAULT there is no way to send USDG out at all", () => {
+  // The recipient used to be free-form, which left the per-call amount as the
+  // only on-chain bound — and the daily USDG cap lives off-chain, in the very
+  // worker that would be compromised. The real ceiling was therefore
+  // perTradeUsdg x maxOpsPerDay per day until expiry (2,400/day at the default
+  // preset): "bounded" only in that draining took a fortnight.
+  assert.equal(find(CASH.USDG, "transfer").length, 0, "no registered address, no power to send");
+});
+
+test("registering withdrawal addresses pins the recipient to exactly those", () => {
+  const A = "0x1111111111111111111111111111111111111111" as const;
+  const B = "0x2222222222222222222222222222222222222222" as const;
+  const list = buildCallPermissions(CAPS, SELF, {
+    // Duplicated and mixed-case on purpose: a repeat must not bloat the policy
+    // and a case difference must not read as a second address.
+    withdrawalAddresses: [A, B, A, B.toUpperCase() as typeof B],
+  }) as unknown as Perm[];
+  const p = list.find((x) => x.target.toLowerCase() === CASH.USDG.toLowerCase() && x.functionName === "transfer");
+  assert.ok(p, "registering an address grants the transfer permission");
+  const [recipient, amount] = p.args as [{ condition: number; value: string[] }, { value: bigint }];
+  assert.equal(recipient.condition, ParamCondition.ONE_OF);
+  assert.deepEqual(recipient.value, [A, B]);
+  // The amount cap still applies on top of the destination pin.
   assert.equal(amount.value, usdg(CAPS.perTradeUsdg));
 });
 
@@ -136,14 +159,19 @@ test("the vault deposit is capped, the withdrawal is not — but BOTH land in ou
   assert.equal(wdArgs[2], null, "owner is unconstrained — it can only be us anyway");
 });
 
-test("the routers are narrowed to one function each, except Rialto which cannot be", () => {
+test("the routers are narrowed to one function each, and Rialto is absent by default", () => {
   assert.equal(find(UNISWAP.swapRouter02, "exactInputSingle").length, 1);
   assert.equal(find(UNISWAP.universalRouter, "execute").length, 1);
-  const [rialto] = find(RIALTO.routerSnapshot);
-  // Its calldata comes from the quote API, so there is no shape to constrain —
-  // target-scoping is the whole control, and it must stay that way deliberately.
-  assert.ok(rialto, "the Rialto permission must exist");
-  assert.equal(rialto.functionName, undefined);
+  // Rialto's calldata comes from a quote API, so there is no shape to
+  // constrain — the permission is effectively "call anything on this
+  // contract". It needs an integrator key to work at all, so the default wall
+  // simply doesn't carry it.
+  assert.equal(find(RIALTO.routerSnapshot).length, 0);
+
+  const optedIn = buildCallPermissions(CAPS, SELF, { allowRialto: true }) as unknown as Perm[];
+  const rialto = optedIn.find((p) => p.target.toLowerCase() === RIALTO.routerSnapshot.toLowerCase());
+  assert.ok(rialto, "opting in adds it");
+  assert.equal(rialto.functionName, undefined, "still unconstrainable — that is the point of making it opt-in");
 });
 
 test("owner-added tokens are validated and de-duplicated before becoming policy", () => {
@@ -161,9 +189,15 @@ test("owner-added tokens are validated and de-duplicated before becoming policy"
 test("the wall carries exactly the expected permission set — no more, no less", () => {
   const list = perms();
   const stockCount = STOCK_TOKENS.filter((t) => (TRADEABLE_SYMBOLS as readonly string[]).includes(t.symbol)).length;
-  // 1 USDG approve + N stock approves + 1 USDG transfer + rialto + swapRouter02
-  // + vault deposit + vault withdraw + permit2 + universalRouter
-  assert.equal(list.length, stockCount + 8, "an unexpected permission count means something was added or lost");
+  // DEFAULT wall: 1 USDG approve + N stock approves + swapRouter02 + vault
+  // deposit + vault withdraw + permit2 + universalRouter. No USDG transfer and
+  // no Rialto — both are opt-in.
+  assert.equal(list.length, stockCount + 6, "an unexpected permission count means something was added or lost");
+  // ...and each opt-in adds exactly one entry, never more.
+  const withXfer = buildCallPermissions(CAPS, SELF, { withdrawalAddresses: [SELF] });
+  const withRialto = buildCallPermissions(CAPS, SELF, { allowRialto: true });
+  assert.equal(withXfer.length, list.length + 1);
+  assert.equal(withRialto.length, list.length + 1);
   // Nothing may authorise sending native value.
   for (const p of list) assert.equal(p.valueLimit, 0n, `${p.target} must not be allowed to move native ETH`);
 });

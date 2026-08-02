@@ -188,10 +188,11 @@ export default function Home() {
             <div className="cell" data-reveal="up" style={{ ["--d" as string]: "80ms" }}>
               <h4>merrymen inverts it</h4>
               <p>
-                The agent lives on your machine and holds a session key whose caps — per-trade,
-                daily, ops/day, drawdown, expiry — are enforced by your account contract on-chain,
-                verifiable in the explorer. Even a fully compromised agent cannot spend past the
-                wall. You verify; it trades.
+                The agent lives on your machine and holds a session key whose limits — how much per
+                trade, how often, how long it lives, and <em>where value may land</em> — are
+                enforced by your account contract on-chain, verifiable in the explorer. A
+                compromised agent can trade inside that wall. It cannot send your funds to an
+                address you never registered, and it cannot sign anything. You verify; it trades.
               </p>
             </div>
           </div>

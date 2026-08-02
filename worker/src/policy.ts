@@ -56,6 +56,14 @@ export interface AgentLimits {
    * broker path this IS the asset wall, so never leave it undefined there.
    */
   allowedTickers?: readonly string[];
+  /**
+   * Addresses this grant's wall permits USDG transfers to, mirroring the
+   * on-chain ONE_OF pin. An EMPTY array means the wall has no transfer
+   * permission at all; UNDEFINED means the grant predates the allowlist and
+   * still carries the old free-form permission — the two are different, and
+   * conflating them would make this mirror stricter than the chain.
+   */
+  withdrawalAddresses?: readonly string[];
   /** Drawdown (bps from high-water mark) at which the breaker pauses the agent. */
   maxDrawdownBps: number;
   /** Unix seconds after which the session key is dead regardless of anything. */
@@ -253,10 +261,37 @@ export function checkPolicy(
   }
 
   if (intent.kind === "transfer") {
-    // Recipient is free-form by design (user-confirmed in chat) but must at
-    // least be a plausible address — garbage never reaches calldata.
+    // Must at least be a plausible address — garbage never reaches calldata.
     if (!/^0x[0-9a-fA-F]{40}$/.test(intent.recipient)) {
       return { ok: false, rule: "transfer-recipient", detail: `recipient ${intent.recipient} is not an address` };
+    }
+    // MIRROR of the on-chain withdrawal allowlist. The wall now pins the USDG
+    // transfer recipient to the addresses the owner registered at signing, and
+    // carries no transfer permission at all when none were. Checking it here
+    // too costs nothing and turns an opaque on-chain revert into a sentence
+    // that says what to do — the same reason the rest of this file exists.
+    //
+    // Undefined means "this grant predates the allowlist", NOT "allow
+    // anything": such a grant genuinely has the old free-form permission, and
+    // a mirror stricter than the chain would reject trades the wall permits.
+    if (limits.withdrawalAddresses) {
+      if (limits.withdrawalAddresses.length === 0) {
+        return {
+          ok: false,
+          rule: "transfer-not-permitted",
+          detail:
+            "this wall carries no transfer permission — no withdrawal addresses were registered when it was signed. " +
+            "Re-sign the grant with a destination, or move funds with your owner key (`merrymen recover`).",
+        };
+      }
+      const to = intent.recipient.toLowerCase();
+      if (!limits.withdrawalAddresses.some((a) => a.toLowerCase() === to)) {
+        return {
+          ok: false,
+          rule: "transfer-recipient-allowlist",
+          detail: `${intent.recipient} is not one of the registered withdrawal addresses on this wall`,
+        };
+      }
     }
     if (intent.amountUsdg <= 0n) {
       return { ok: false, rule: "transfer-amount", detail: "transfer amount must be positive" };
