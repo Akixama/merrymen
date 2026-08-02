@@ -11,6 +11,7 @@ import { forgetOwner, readOwner } from "@/crypto/keystore";
 import { clearGrant, readGrant, secondsLeft } from "@/crypto/grantStore";
 import { accountFromMnemonic } from "@/crypto/mnemonic";
 import { useBottomPad, useTopPad } from "@/ui/insets";
+import { useNoScreenshots } from "@/ui/useNoScreenshots";
 import { C } from "@/ui/tokens";
 
 /**
@@ -65,6 +66,26 @@ export default function Settings() {
   const [loaded, setLoaded] = useState(false);
   const [tg, setTg] = useState<TelegramStatus | null>(null);
   const [tgError, setTgError] = useState<string | null>(null);
+  /**
+   * Whether the status above is generated. fetchTelegramStatus already returns
+   * `mock`, and this screen used to throw it away — so a demo build showed a
+   * plausible bot handle and, worse, a fabricated one-time link code, styled
+   * exactly like a real one. A link code is a credential; inventing one and
+   * presenting it as the user's is the kind of detail that teaches someone to
+   * trust the wrong thing.
+   */
+  const [tgMock, setTgMock] = useState(false);
+
+  /**
+   * FLAG_SECURE while this screen is mounted — screenshots and screen recording
+   * are blocked and the recents thumbnail is blanked.
+   *
+   * Unconditional rather than gated on `phrase !== null`, because a hook cannot
+   * be called conditionally and because the protection has to be in place
+   * BEFORE the words appear, not one render after. The rest of this screen is
+   * addresses and caps, which nobody needed to screenshot anyway.
+   */
+  useNoScreenshots("settings");
 
   useEffect(() => {
     void fetchTelegramStatus(isMock ? null : feedOrigin).then((r) => {
@@ -72,8 +93,10 @@ export default function Settings() {
       // "checking the bridge…" for as long as the screen stayed open. Reading as
       // "almost ready" when the truth is "your agent is unreachable" is the
       // wrong way round for the one screen about stopping it.
-      if (r.ok) setTg(r.status);
-      else setTgError(r.reason);
+      if (r.ok) {
+        setTg(r.status);
+        setTgMock(r.mock);
+      } else setTgError(r.reason);
     });
   }, []);
 
@@ -310,6 +333,13 @@ export default function Settings() {
           <View style={styles.card}>
             {tg === null ? (
               <Text style={styles.muted}>checking the bridge…</Text>
+            ) : tgMock ? (
+              /* Say it instead of dressing up invented values as a real bridge.
+                 The bot handle and the link code below would both be fiction. */
+              <Text style={styles.body}>
+                No agent to talk to — this build reads generated data. The bot handle and link code a real
+                install shows you would both be invented here, so they aren&apos;t shown.
+              </Text>
             ) : !tg.hasToken ? (
               /* Nothing this app can do about a missing token — the bot is created in
                  Telegram and its token pasted into the dashboard, and the token

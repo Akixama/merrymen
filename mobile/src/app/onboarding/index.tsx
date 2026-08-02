@@ -1,10 +1,10 @@
-import { useCallback, useMemo, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { ActivityIndicator, AppState, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { router } from "expo-router";
-import * as Clipboard from "expo-clipboard";
 import { accountFromMnemonic, buildQuiz, newMnemonic, validateMnemonic } from "@/crypto/mnemonic";
 import { keystoreAvailable, writeOwner } from "@/crypto/keystore";
 import { useBottomPad, useTopPad } from "@/ui/insets";
+import { useNoScreenshots } from "@/ui/useNoScreenshots";
 import { C } from "@/ui/tokens";
 
 /**
@@ -39,9 +39,47 @@ export default function OnboardingStart() {
   const [answers, setAnswers] = useState<Record<number, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [copied, setCopied] = useState(false);
+
+  /**
+   * Block screenshots and screen recording while the phrase is on screen.
+   *
+   * FLAG_SECURE on Android, and it also blanks the recents thumbnail — which is
+   * the failure that needs no attacker at all: the OS snapshots the screen as
+   * the app backgrounds, and the thing on screen at that moment is twelve words
+   * that move the money. A no-op on web, where the preview runs.
+   *
+   * Hooks cannot be called conditionally, so this covers the whole screen
+   * rather than only the two stages that render words. The cost is that
+   * "choose" and "import" are also uncapturable, which nobody will notice.
+   */
+  useNoScreenshots("onboarding");
 
   const words = useMemo(() => (mnemonic ?? "").split(" ").filter(Boolean), [mnemonic]);
+
+  /**
+   * Drop the phrase from memory the moment the app leaves the foreground.
+   *
+   * settings.tsx already does this for its reveal; this screen — the one where
+   * the phrase FIRST appears, and the only place it exists before anything is
+   * persisted — did not. Sending the user back to "choose" is deliberate: the
+   * key was never written to the keystore at this stage (see the header), so
+   * there is nothing to clean up and nothing lost but a few taps.
+   */
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (s) => {
+      if (s === "active") return;
+      setMnemonic(null);
+      setTyped("");
+      setQuiz([]);
+      setAnswers({});
+      // Only the generated-key stages go back to the start. An importer who
+      // switches to their password manager and returns must land on the import
+      // field they left, not at the top — the typed text is cleared either way,
+      // and a paste on return still works.
+      setStage((st) => (st === "write" || st === "quiz" ? "choose" : st));
+    });
+    return () => sub.remove();
+  }, []);
 
   const create = useCallback(async () => {
     setError(null);
@@ -206,18 +244,24 @@ export default function OnboardingStart() {
             </Text>
           </View>
 
-          <Pressable
-            style={styles.secondary}
-            onPress={async () => {
-              await Clipboard.setStringAsync(mnemonic!);
-              setCopied(true);
-              setTimeout(() => setCopied(false), 2500);
-            }}>
-            <Text style={styles.secondaryText}>
-              {copied ? "copied — clear your clipboard after" : "copy to clipboard"}
-            </Text>
-          </Pressable>
+          {/*
+            There WAS a "copy to clipboard" button here, whose own label read
+            "copied — clear your clipboard after". It is gone, because that
+            instruction is not something a user can reliably carry out.
 
+            Android's clipboard is shared, and expo-clipboard cannot mark a clip
+            sensitive: ClipboardModule.kt calls ClipData.newPlainText(null,
+            content) and never touches setExtras, so ClipDescription's
+            EXTRA_IS_SENSITIVE is never set — and SetStringOptions has exactly
+            one field, inputFormat. The phrase would therefore sit in the
+            keyboard's clipboard history, be shown verbatim in the system's copy
+            confirmation, and be readable by whichever app next took focus.
+
+            That is the one string in this product that alone can move the
+            money, and the paragraph directly above says paper beats
+            screenshots. The quiz on the next stage already proves the words
+            were transcribed, so nothing here needed a shortcut.
+          */}
           <Pressable
             style={styles.primary}
             onPress={() => {

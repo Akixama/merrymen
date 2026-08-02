@@ -9,6 +9,7 @@ import { forgetOwner, readOwner, writeOwner } from "@/crypto/keystore";
 import { readGrant } from "@/crypto/grantStore";
 import { EXPLORER, RPC_URL } from "@/net/chainlinks";
 import { useBottomPad, useTopPad } from "@/ui/insets";
+import { useNoScreenshots } from "@/ui/useNoScreenshots";
 import { C } from "@/ui/tokens";
 
 /**
@@ -30,9 +31,27 @@ import { C } from "@/ui/tokens";
 
 type Stage = "restore" | "plan" | "sent";
 
+/**
+ * Strip query strings out of anything URL-shaped before it reaches the screen.
+ *
+ * The bundler field's own placeholder is `…/rpc?apikey=…`, and viem embeds the
+ * full request URL in its error messages — errors/request.js builds
+ * `URL: ${getUrl(url)}` into metaMessages, and getUrl only removes basic-auth
+ * userinfo, not the search string. So a failed sweep printed the owner's
+ * bundler API key on screen, in a stack of text people paste into chats when
+ * asking for help.
+ */
+function redact(message: string): string {
+  return message.replace(/(https?:\/\/[^\s]+?)\?[^\s]*/g, "$1?…");
+}
+
 export default function Recover() {
   const topPad = useTopPad();
   const bottomPad = useBottomPad();
+
+  // The restore stage holds a typed recovery phrase in a TextInput and previews
+  // the address it derives. Same protection as the screens that display one.
+  useNoScreenshots("recover");
   const [stage, setStage] = useState<Stage>("restore");
   const [phrase, setPhrase] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -99,7 +118,7 @@ export default function Recover() {
       });
       setPlan(p);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't read the account.");
+      setError(e instanceof Error ? redact(e.message) : "Couldn't read the account.");
     } finally {
       setBusy(false);
       setNote(null);
@@ -132,7 +151,7 @@ export default function Recover() {
       setTxHash(res.txHash);
       setStage("sent");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "The sweep failed.");
+      setError(e instanceof Error ? redact(e.message) : "The sweep failed.");
     } finally {
       setBusy(false);
       setNote(null);
