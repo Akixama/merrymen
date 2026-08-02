@@ -17,6 +17,12 @@ export interface TelegramStatus {
   allowlist: number[];
   /** Single-use code the owner sends as `/link <code>` to claim ownership. */
   linkCode: string | null;
+  /**
+   * Whether the chat can CHANGE anything (/pause, /kill) or only answer
+   * questions. `null` when the agent is too old to report it — which is not the
+   * same as "off", and the UI must not render it as either.
+   */
+  control: boolean | null;
 }
 
 const MOCK: TelegramStatus = {
@@ -27,6 +33,7 @@ const MOCK: TelegramStatus = {
   owner: null,
   allowlist: [],
   linkCode: "7F3K-2QD9",
+  control: true,
 };
 
 export type TelegramOutcome =
@@ -41,7 +48,12 @@ export async function fetchTelegramStatus(origin: string | null, signal?: AbortS
   try {
     const res = await fetch(`${origin}/api/telegram`, { signal, headers: { accept: "application/json" } });
     if (!res.ok) return { ok: false, reason: `agent replied ${res.status}` };
-    const json = (await res.json()) as Partial<TelegramStatus>;
+    // The route's own field is `ownerId`. This client read `owner`, which the
+    // route has never sent — so against a real agent the owner was ALWAYS null:
+    // an owner who linked months ago still saw "Open Telegram and link" and was
+    // still shown their one-time link code, on every visit, forever.
+    const json = (await res.json()) as Partial<TelegramStatus> & { ownerId?: unknown };
+    const ownerId = json.ownerId;
     return {
       ok: true,
       mock: false,
@@ -50,9 +62,13 @@ export async function fetchTelegramStatus(origin: string | null, signal?: AbortS
         connected: Boolean(json.connected),
         hasToken: Boolean(json.hasToken),
         botUsername: typeof json.botUsername === "string" ? json.botUsername : null,
-        owner: typeof json.owner === "number" ? json.owner : null,
+        owner: typeof ownerId === "number" ? ownerId : null,
         allowlist: Array.isArray(json.allowlist) ? json.allowlist : [],
         linkCode: typeof json.linkCode === "string" && json.linkCode ? json.linkCode : null,
+        // Tri-state on purpose. An agent predating the field sends nothing, and
+        // "we don't know" must not collapse into "off" (which would hide a stop
+        // that works) or "on" (which would promise one that doesn't).
+        control: typeof json.control === "boolean" ? json.control : null,
       },
     };
   } catch {

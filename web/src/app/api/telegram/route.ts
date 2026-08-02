@@ -1,6 +1,6 @@
 /**
  * Telegram connection status for the dashboard.
- *   GET  → { enabled, connected, botUsername, owner, allowlist, linkCode }
+ *   GET  → { enabled, connected, botUsername, ownerId, allowlist, linkCode, control }
  *   POST → { action: "test" } validates the current/provided token live (getMe)
  *          and returns the bot @username, without saving anything.
  *
@@ -47,6 +47,16 @@ export interface TelegramStatus {
   ownerId: number | null;
   allowlist: number[];
   linkCode: string | null;
+  /**
+   * Whether the chat may CHANGE anything, or only answer questions.
+   *
+   * worker/src/telegram/executor.ts gates every CONTROL_KIND on this and
+   * otherwise replies "control commands are turned off". Without the flag here,
+   * a client can only guess — and the phone's Settings screen was about to tell
+   * people "/pause stops it" with no way to know whether that is true for them.
+   * A stop instruction that might be a locked door is worse than no instruction.
+   */
+  control: boolean;
 }
 
 export async function GET() {
@@ -62,6 +72,11 @@ export async function GET() {
     ownerId: typeof tg.ownerId === "number" ? tg.ownerId : null,
     allowlist: Array.isArray(settings.telegramAllowlist) ? settings.telegramAllowlist : [],
     linkCode: typeof tg.linkCode === "string" && tg.linkCode ? tg.linkCode : null,
+    // `!== false`, not `=== true`: the field defaults to true (core settings
+    // DEFAULTS, mirrored by worker/src/settings.ts's bool() resolution), so an
+    // absent key means enabled. `=== true` would report control off for every
+    // install that never touched the toggle.
+    control: settings.telegramControlEnabled !== false,
   };
   if (status.hasToken) {
     const username = await botUsername(token!);
