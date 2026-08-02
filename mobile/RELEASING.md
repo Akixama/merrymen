@@ -19,11 +19,24 @@ already refuses `*.jks`, `*.p12`, `*.key` and `*.p8`.
 
 ## Build it
 
+> Use `npx eas-cli`, **not** `npx eas-cli@latest`. The `@latest` form crashes
+> here with `npm error Invalid Version:` — an npm arborist bug in `canDedupe →
+> semver.gte` while it builds the CLI's own temp install tree (it dies placing
+> `uuid` for `@expo/bunyan`). Nothing to do with this project; the plain form
+> works. eas-cli is deliberately NOT a devDependency: it drags in ~700 packages
+> and two high-severity advisories, and EAS Build runs its own pinned CLI
+> server-side anyway, so the local one only submits the job.
+
 **you** — one time, with your own Expo account:
 
 ```bash
 npx eas-cli login
 ```
+
+The project is already linked — `extra.eas.projectId` in `app.json` is
+`8da0c95f-0501-437e-ba78-5c6b9eeab29c`, so `eas init` does not need re-running.
+`eas whoami` reports "Not logged in" until you do the above; every EAS command
+fails with "An Expo user account is required to proceed" until then.
 
 Then, from `mobile/`:
 
