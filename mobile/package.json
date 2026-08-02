@@ -60,7 +60,9 @@
     "lint": "expo lint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "guard:release": "node scripts/guard-release.mjs",
+    "eas-build-pre-install": "node scripts/guard-release.mjs"
   },
   "private": true,
   "overrides": {

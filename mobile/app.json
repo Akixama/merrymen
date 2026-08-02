@@ -2,7 +2,7 @@
   "expo": {
     "name": "merrymen",
     "slug": "merrymen",
-    "version": "1.0.0",
+    "version": "0.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "merrymen",
@@ -13,6 +13,13 @@
     },
     "android": {
       "package": "dev.merrymen.app",
+      "allowBackup": false,
+      "blockedPermissions": [
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.VIBRATE"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#0d1512",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
