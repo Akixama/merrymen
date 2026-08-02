@@ -128,7 +128,16 @@ export default function Settings() {
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingTop: topPad, paddingBottom: bottomPad }]}>
-      <Text style={styles.h1}>Settings</Text>
+      {/* An explicit way out. This is a headerless modal, so the only dismissal
+          was a downward swipe on iOS and the system back button on Android —
+          neither of which is visible, and one of which doesn't exist on a phone
+          using gesture navigation. */}
+      <View style={styles.titleRow}>
+        <Text style={styles.h1}>Settings</Text>
+        <Pressable style={styles.done} hitSlop={10} onPress={() => router.back()}>
+          <Text style={styles.doneText}>Done</Text>
+        </Pressable>
+      </View>
 
       {/* ── the wall ─────────────────────────────────────────────────────── */}
       <Text style={styles.section}>the wall</Text>
@@ -321,7 +330,10 @@ function Bullet({ text }: { text: string }) {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
   content: { paddingHorizontal: 20, gap: 10 },
-  h1: { color: C.text, fontSize: 28, fontWeight: "700", letterSpacing: -0.5, marginBottom: 4 },
+  titleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 4 },
+  h1: { color: C.text, fontSize: 28, fontWeight: "700", letterSpacing: -0.5 },
+  done: { minHeight: 44, justifyContent: "center", paddingLeft: 12 },
+  doneText: { color: C.green, fontSize: 15, fontWeight: "600" },
   section: {
     color: C.faint,
     fontSize: 11,

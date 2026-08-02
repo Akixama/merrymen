@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
-import { Dimensions, Linking, Pressable, StyleSheet, Text, View } from "react-native";
+import { useMemo } from "react";
+import { Dimensions, Pressable, StyleSheet, Text, View } from "react-native";
 import { FlashList } from "@shopify/flash-list";
 import { Link } from "expo-router";
-import { feedOrigin, isMock } from "@/net/api";
-import { EXPLORER } from "@/net/chainlinks";
-import { readGrant } from "@/crypto/grantStore";
+import Ionicons from "@expo/vector-icons/Ionicons";
+import { isMock } from "@/net/api";
 import {
   useAgentName,
   useCash,
@@ -45,8 +44,9 @@ import { C, GUTTER } from "@/ui/tokens";
 
 const W = Dimensions.get("window").width - GUTTER * 2;
 
-/** How many decisions to show. The tape's whole history lives in the store. */
-const RECENT = 40;
+/** How many decisions the home glance shows. The full history stays in the
+ * store; forty rows made the screen a scroll rather than a summary. */
+const RECENT = 15;
 
 type Row =
   | { kind: "heading"; key: string; text: string }
@@ -88,13 +88,6 @@ export default function Home() {
   const lastOkAt = useLastOkAt();
   const lastError = useLastError();
 
-  // The one thing on this screen that isn't in the feed: which account to open
-  // on the explorer. Read once — it only changes when a wall is signed.
-  const [account, setAccount] = useState<string | null>(null);
-  useEffect(() => {
-    void readGrant().then((g) => setAccount(g?.smartAccount ?? null));
-  }, []);
-
   // Change across the visible window, so the headline figure has a reference
   // point instead of being a number with no context.
   const delta = useMemo(() => {
@@ -105,32 +98,46 @@ export default function Home() {
   }, [series]);
 
   const rows = useMemo<Row[]>(() => {
-    const out: Row[] = [{ kind: "heading", key: "h-pos", text: "holding" }];
+    // Counts in the heading, so the sections are scannable without counting
+    // rows — and so an empty one reads as "none" rather than as a loading bug.
+    const out: Row[] = [
+      { kind: "heading", key: "h-pos", text: symbols.length ? `holding · ${symbols.length}` : "holding" },
+    ];
     if (symbols.length === 0) {
       out.push({
         kind: "empty",
         key: "e-pos",
-        text:
-          lastOkAt === null
-            ? "reading…"
-            : "Nothing open. A funded agent that hasn't bought yet looks exactly like this.",
+        // Short. The long reassurance ("a funded agent that hasn't bought yet
+        // looks exactly like this") was for a first run and read as clutter on
+        // every subsequent one.
+        text: lastOkAt === null ? "reading…" : "Nothing open yet.",
       });
     } else {
       for (const s of symbols) out.push({ kind: "position", key: `p-${s}`, symbol: s });
     }
 
-    out.push({ kind: "heading", key: "h-tape", text: "decisions" });
+    const shown = tapeIds.slice(0, RECENT);
+    // Say when the list is cut. A bare "recent activity" over exactly fifteen
+    // rows reads as the whole history, and the whole history is the one thing
+    // this screen must never appear to be hiding.
+    out.push({
+      kind: "heading",
+      key: "h-tape",
+      text:
+        tapeIds.length > shown.length
+          ? `recent activity · ${shown.length} of ${tapeIds.length}`
+          : tapeIds.length
+            ? `recent activity · ${tapeIds.length}`
+            : "recent activity",
+    });
     if (tapeIds.length === 0) {
       out.push({
         kind: "empty",
         key: "e-tape",
-        text:
-          lastOkAt === null
-            ? "reading…"
-            : "Nothing yet. Every decision lands here — including the ones the wall refused, which are usually the interesting ones.",
+        text: lastOkAt === null ? "reading…" : "No decisions yet — including refusals, they'll show up here.",
       });
     } else {
-      for (const id of tapeIds.slice(0, RECENT)) out.push({ kind: "trade", key: `t-${id}`, id });
+      for (const id of shown) out.push({ kind: "trade", key: `t-${id}`, id });
     }
     return out;
   }, [symbols, tapeIds, lastOkAt]);
@@ -160,19 +167,37 @@ export default function Home() {
         contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: bottomPad }}
         ListHeaderComponent={
           <View style={[styles.header, { paddingTop: topPad }]}>
-            {isMock && (
-              <View style={styles.mockBadge}>
-                <Text style={styles.mockText}>
-                  MOCK DATA — generated on-device, no agent connected. Set EXPO_PUBLIC_FEED_ORIGIN to read a
-                  real one.
+            {/* Identity and the way out, on one line. Settings used to be a
+                full-width button at the very bottom of an endless feed — the
+                one control on the screen, and you had to scroll past forty
+                trades to reach it. */}
+            <View style={styles.topRow}>
+              <View style={styles.identity}>
+                <Text style={styles.who} numberOfLines={1}>
+                  {name ?? "merryman"}
                 </Text>
+                <View style={styles.statusRow}>
+                  <View style={[styles.dot, { backgroundColor: lastError ? C.gold : C.green }]} />
+                  {/* Was: "updated 3s ago · https://long.origin.example". The
+                      origin is a setup detail, and it lives in Settings → data
+                      where it can be read once rather than every glance. */}
+                  <Text style={styles.status} numberOfLines={1}>
+                    {lastError ? "stale" : "live"} · {age(lastOkAt)}
+                    {strategy ? ` · ${strategy}` : ""}
+                  </Text>
+                </View>
               </View>
-            )}
-
-            <Text style={styles.who}>
-              {name ?? "merryman"}
-              {strategy ? <Text style={styles.strategy}> · {strategy}</Text> : null}
-            </Text>
+              {isMock && (
+                <View style={styles.demoChip}>
+                  <Text style={styles.demoText}>DEMO</Text>
+                </View>
+              )}
+              <Link href="/settings" asChild>
+                <Pressable style={styles.gear} hitSlop={10} accessibilityLabel="Settings">
+                  <Ionicons name="settings-outline" size={20} color={C.dim} />
+                </Pressable>
+              </Link>
+            </View>
 
             <Text style={styles.equity}>{money(equity)}</Text>
             <View style={styles.equityMeta}>
@@ -198,36 +223,10 @@ export default function Home() {
               </View>
             </View>
 
-            {/* Staleness is shown, never hidden. A failed poll deliberately keeps
-                the last good numbers on screen, so this line has to say how old
-                they are — otherwise the screen presents stale data as current.
-                The dot pins to the first line: this text grows to two or three
-                lines in exactly the case it exists to announce. */}
-            <View style={styles.statusRow}>
-              <View style={[styles.dot, { backgroundColor: lastError ? C.gold : C.green }]} />
-              <Text style={styles.status}>
-                {lastError ? `last read failed · ${lastError} · ` : ""}
-                updated {age(lastOkAt)} · {feedOrigin}
-              </Text>
-            </View>
-          </View>
-        }
-        ListFooterComponent={
-          <View style={styles.footer}>
-            <Link href="/settings" asChild>
-              <Pressable style={styles.footerBtn}>
-                <Text style={styles.footerBtnText}>settings &amp; the wall</Text>
-              </Pressable>
-            </Link>
-            {/* The project's claim is "check, don't believe", so the screen ends
-                at the ledger rather than at our arithmetic. */}
-            {account && (
-              <Pressable
-                style={styles.verify}
-                onPress={() => void Linking.openURL(`${EXPLORER}/address/${account}`)}>
-                <Text style={styles.verifyText}>check all of this on-chain →</Text>
-              </Pressable>
-            )}
+            {/* The failure the status pill can't fit. Only rendered when a read
+                actually failed — the numbers above are then the LAST GOOD ones,
+                and saying so is the difference between stale data and a lie. */}
+            {lastError && <Text style={styles.errorNote}>Couldn&apos;t reach your agent — {lastError}</Text>}
           </View>
         }
       />
@@ -238,19 +237,30 @@ export default function Home() {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
   header: { gap: 6, paddingBottom: 4 },
-  mockBadge: {
-    backgroundColor: "rgba(234,179,8,0.12)",
-    borderColor: "rgba(234,179,8,0.35)",
-    borderWidth: 1,
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 12,
-  },
-  mockText: { color: C.gold, fontSize: 11, lineHeight: 16 },
+  // Name on the left, state beside it, the way out on the right. alignItems is
+  // center so the gear sits against the two-line identity block rather than
+  // stretching to its height and putting a 20px icon in the middle of nowhere.
+  topRow: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 14 },
+  // flexShrink, not flex:1 — a long agent name gives up width before the gear
+  // does, and the gear never gets pushed off the right edge.
+  identity: { flex: 1, flexShrink: 1 },
   // The agent's name is this screen's title. Knowing WHICH merryman you are
   // looking at matters before any number on the page does.
   who: { color: C.text, fontSize: 20, fontWeight: "700", letterSpacing: -0.3 },
-  strategy: { color: C.dim, fontSize: 13, fontWeight: "400", letterSpacing: 0 },
+  // 44dp: the minimum touch target. The icon is 20, so the box carries the rest.
+  gear: { width: 44, height: 44, alignItems: "center", justifyContent: "center", marginRight: -12 },
+  demoChip: {
+    backgroundColor: "rgba(234,179,8,0.12)",
+    borderColor: "rgba(234,179,8,0.35)",
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  // Was a full paragraph in a bordered box at the top of the screen, every
+  // launch. One word says the same thing; Settings explains it at length.
+  demoText: { color: C.gold, fontSize: 10, fontWeight: "700", letterSpacing: 0.8 },
+  errorNote: { color: C.gold, fontSize: 12, lineHeight: 17, marginTop: 12 },
   equity: { color: C.text, fontSize: 42, fontWeight: "700", fontVariant: ["tabular-nums"], letterSpacing: -1 },
   equityMeta: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: -4 },
   unit: { color: C.faint, fontSize: 12 },
@@ -261,7 +271,7 @@ const styles = StyleSheet.create({
   splitCell: { flex: 1, gap: 2 },
   splitLabel: { color: C.faint, fontSize: 11, textTransform: "uppercase", letterSpacing: 1 },
   splitValue: { color: C.text2, fontSize: 15, fontVariant: ["tabular-nums"] },
-  statusRow: { flexDirection: "row", alignItems: "flex-start", gap: 7, marginTop: 14 },
+  statusRow: { flexDirection: "row", alignItems: "flex-start", gap: 7, marginTop: 4 },
   dot: { width: 7, height: 7, borderRadius: 4, marginTop: 4 },
   status: { color: C.faint, fontSize: 11, flexShrink: 1 },
   sectionTitle: {
@@ -273,17 +283,4 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   empty: { color: C.dim, fontSize: 13, lineHeight: 20, paddingVertical: 18 },
-  footer: { marginTop: 20, gap: 4 },
-  footerBtn: {
-    backgroundColor: C.bg2,
-    borderWidth: 1,
-    borderColor: C.border,
-    borderRadius: 10,
-    minHeight: 48,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  footerBtnText: { color: C.text2, fontSize: 14 },
-  verify: { minHeight: 44, justifyContent: "center" },
-  verifyText: { color: C.green, fontSize: 12.5 },
 });
