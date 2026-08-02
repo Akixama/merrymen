@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { PolicyFlags } from "@zerodev/permissions";
+import { ParamCondition } from "@zerodev/permissions/policies";
+import { encodeFunctionData, pad } from "viem";
 import test from "node:test";
 import {
   CASH,
@@ -8,6 +10,7 @@ import {
   STOCK_TOKENS,
   TRADEABLE_SYMBOLS,
   UNISWAP,
+  UNISWAP_SWAP_ROUTER_ABI,
   allowedSpenders,
   buildCallPermissions,
   buildWallPolicies,
@@ -47,7 +50,9 @@ type Perm = ReturnType<typeof buildCallPermissions>[number] & {
   args?: unknown[];
 };
 
-const perms = () => buildCallPermissions(CAPS) as unknown as Perm[];
+/** The agent's own account — what the wall pins swap/vault destinations to. */
+const SELF = "0x00000000000000000000000000000000000000a9" as const;
+const perms = () => buildCallPermissions(CAPS, SELF) as unknown as Perm[];
 const find = (target: string, fn?: string) =>
   perms().filter((p) => p.target.toLowerCase() === target.toLowerCase() && (fn === undefined || p.functionName === fn));
 
@@ -105,13 +110,30 @@ test("Permit2 may only ever grant an allowance to the UniversalRouter", () => {
   assert.equal(args[1].value.toLowerCase(), UNISWAP.universalRouter.toLowerCase());
 });
 
-test("the vault deposit is capped and the withdrawal is not", () => {
+test("the vault deposit is capped, the withdrawal is not — but BOTH land in our own account", () => {
   const [dep] = find(MORPHO.steakhouseUsdgVault, "deposit");
   const [wd] = find(MORPHO.steakhouseUsdgVault, "withdraw");
   assert.ok(dep && wd);
-  assert.equal((dep.args as [{ value: bigint }, null])[0].value, usdg(CAPS.dailyUsdg));
-  // Money coming home is not a risk the wall needs to bound.
-  assert.equal(wd.args, undefined);
+
+  // deposit(assets, receiver): size capped at the daily limit...
+  assert.equal((dep.args as [{ value: bigint }, unknown])[0].value, usdg(CAPS.dailyUsdg));
+  // ...and the SHARES come to us. Unpinned, the agent could spend the owner's
+  // USDG and mint the vault position to someone else.
+  assert.deepEqual((dep.args as [unknown, { condition: number; value: string }])[1], {
+    condition: ParamCondition.EQUAL,
+    value: SELF,
+  });
+
+  // withdraw(assets, receiver, owner): size deliberately unbounded — money
+  // coming home is not a risk. But this test used to assert `wd.args ===
+  // undefined` ON PURPOSE, with a comment about money coming home, while the
+  // policy let the session key send the entire vault position ANYWHERE in one
+  // uncapped call. The comment described the intent; the policy permitted the
+  // opposite. "Coming home" is now enforced rather than assumed.
+  const wdArgs = wd.args as [null, { condition: number; value: string }, null];
+  assert.equal(wdArgs[0], null, "size stays unbounded");
+  assert.deepEqual(wdArgs[1], { condition: ParamCondition.EQUAL, value: SELF });
+  assert.equal(wdArgs[2], null, "owner is unconstrained — it can only be us anyway");
 });
 
 test("the routers are narrowed to one function each, except Rialto which cannot be", () => {
@@ -120,11 +142,12 @@ test("the routers are narrowed to one function each, except Rialto which cannot 
   const [rialto] = find(RIALTO.routerSnapshot);
   // Its calldata comes from the quote API, so there is no shape to constrain —
   // target-scoping is the whole control, and it must stay that way deliberately.
+  assert.ok(rialto, "the Rialto permission must exist");
   assert.equal(rialto.functionName, undefined);
 });
 
 test("owner-added tokens are validated and de-duplicated before becoming policy", () => {
-  const builtinAddr = STOCK_TOKENS[0].address;
+  const builtinAddr = STOCK_TOKENS[0]!.address;
   const usable = usableExtraTokens([
     { address: builtinAddr, symbol: "DUP", decimals: 18 } as never, // already covered
     { address: "0xnothex", symbol: "BAD", decimals: 18 } as never, // malformed
@@ -132,7 +155,7 @@ test("owner-added tokens are validated and de-duplicated before becoming policy"
     { address: "0x1111111111111111111111111111111111111111", symbol: "OK", decimals: 18 } as never, // repeat
   ]);
   assert.equal(usable.length, 1, "only the one valid, non-duplicate token survives");
-  assert.equal(usable[0].symbol, "OK");
+  assert.equal(usable[0]!.symbol, "OK");
 });
 
 test("the wall carries exactly the expected permission set — no more, no less", () => {
@@ -147,7 +170,7 @@ test("the wall carries exactly the expected permission set — no more, no less"
 
 test("policies carry a hard expiry and a daily op limit", () => {
   const now = 1_800_000_000;
-  const { policies, expiresAt } = buildWallPolicies({ caps: CAPS, now });
+  const { policies, expiresAt } = buildWallPolicies({ caps: CAPS, smartAccount: SELF, now });
   assert.equal(expiresAt, now + CAPS.expiryDays * 86_400);
   // Expiry, rate limit, call policy — the key dies on schedule even if every
   // other control fails.
@@ -172,5 +195,49 @@ test("the session key may EXECUTE but may not SIGN (the ERC-1271 hole)", () => {
     WALL_POLICY_FLAG,
     PolicyFlags.FOR_ALL_VALIDATION,
     "the library default lets the session key sign — never ship it",
+  );
+});
+
+test("the swap recipient is pinned to our own account, at the RIGHT calldata offset", () => {
+  const [swap] = find(UNISWAP.swapRouter02, "exactInputSingle");
+  assert.ok(swap);
+  const args = swap.args as (null | { condition: number; value: string })[];
+
+  // Seven entries for a ONE-parameter function, because the call policy maps
+  // args[i] to calldata offset i*32 with no ABI arity check, and
+  // ExactInputSingleParams is an all-static tuple encoded INLINE as seven
+  // consecutive words. Index 3 is `recipient`.
+  assert.equal(args.length, 7);
+  assert.deepEqual(args[3], { condition: ParamCondition.EQUAL, value: SELF });
+  for (const i of [0, 1, 2, 4, 5, 6]) assert.equal(args[i], null, `arg ${i} must stay unconstrained`);
+
+  // AND PROVE THE OFFSET, against viem's encoder rather than against the
+  // reasoning above. If SwapRouter02's struct ever gains a dynamic member or
+  // reorders its fields, the inline layout shifts and args[3] would silently
+  // constrain the WRONG word — a policy that looks strict and isn't. This
+  // fails loudly instead.
+  const OTHER = "0x00000000000000000000000000000000000000ff" as const;
+  const calldata = encodeFunctionData({
+    abi: UNISWAP_SWAP_ROUTER_ABI,
+    functionName: "exactInputSingle",
+    args: [
+      {
+        tokenIn: CASH.USDG as `0x${string}`,
+        tokenOut: OTHER,
+        fee: 3000,
+        recipient: SELF,
+        amountIn: 1_000_000n,
+        amountOutMinimum: 0n,
+        sqrtPriceLimitX96: 0n,
+      },
+    ],
+  });
+  // Skip the 4-byte selector, then read word 3 (the policy's offset 3*32).
+  const body = `0x${calldata.slice(10)}`;
+  const word3 = `0x${body.slice(2 + 3 * 64, 2 + 4 * 64)}`;
+  assert.equal(
+    word3.toLowerCase(),
+    pad(SELF, { size: 32 }).toLowerCase(),
+    "offset 3*32 must be `recipient` — if this fails the tuple layout moved and the pin is aimed at the wrong field",
   );
 });

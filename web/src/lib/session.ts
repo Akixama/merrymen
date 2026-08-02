@@ -142,10 +142,26 @@ async function mintGrant(
   const sessionAccount = privateKeyToAccount(sessionPrivateKey);
   const sessionSigner = await toECDSASigner({ signer: sessionAccount });
 
+  // THE ACCOUNT ADDRESS, BEFORE THE WALL — because the wall now pins value to
+  // it. The Kernel address derives from the SUDO validator alone; the
+  // permission plugin is enabled at UserOp time and does not affect it (the
+  // same fact that makes restore work). So derive the sudo-only account first,
+  // pin the swap recipient / vault receiver to it, and assert below that the
+  // full account came out identical.
+  const sudoOnlyAccount = await createKernelAccount(publicClient, {
+    entryPoint,
+    kernelVersion,
+    plugins: { sudo: ecdsaValidator },
+  });
+
   // THE WALL now lives in packages/core/src/wall.ts, so the phone app signs the
   // IDENTICAL permission set rather than a second copy that could drift from this
   // one with nothing failing when it did. worker/src/wall.test.ts pins its shape.
-  const { policies, now, expiresAt } = buildWallPolicies({ caps, extraTokens });
+  const { policies, now, expiresAt } = buildWallPolicies({
+    caps,
+    smartAccount: sudoOnlyAccount.address,
+    extraTokens,
+  });
 
   const permissionValidator = await toPermissionValidator(publicClient, {
     entryPoint,
@@ -167,6 +183,19 @@ async function mintGrant(
       regular: permissionValidator,
     },
   });
+
+  // THE PREMISE, CHECKED. The wall pins the swap recipient and vault receiver
+  // to the sudo-only address derived above, which is only correct because the
+  // permission plugin does not change the account address. If that ever stops
+  // being true, every pin would point at an account that doesn't exist and the
+  // agent would be unable to trade — or worse, at someone else's. Fail here,
+  // loudly, before a grant is sealed, rather than discovering it on-chain.
+  if (account.address.toLowerCase() !== sudoOnlyAccount.address.toLowerCase()) {
+    throw new Error(
+      `refusing to seal this grant: the permission plugin changed the account address ` +
+        `(${sudoOnlyAccount.address} → ${account.address}), so the wall's recipient pins are wrong.`,
+    );
+  }
 
   onStatus("sealing the permission grant…");
   const serialized = await serializePermissionAccount(account, sessionPrivateKey);

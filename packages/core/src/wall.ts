@@ -109,9 +109,28 @@ export function usableExtraTokens(extraTokens: readonly CustomToken[] = []): Cus
  * are opaque once constructed, so asserting on them proves little. This returns
  * the thing that actually defines the wall, in a shape a test can read.
  */
-export function buildCallPermissions(caps: GrantCaps, extraTokens: readonly CustomToken[] = []) {
+export function buildCallPermissions(
+  caps: GrantCaps,
+  /**
+   * The agent's own smart-account address — where value must land.
+   *
+   * REQUIRED, not optional with a fallback. An optional parameter would let a
+   * caller silently rebuild the OLD wall, where the swap recipient and the
+   * vault receiver were unconstrained, and nothing would fail — which is
+   * exactly how the signature hole (WALL_POLICY_FLAG) survived: a default that
+   * happened to be permissive.
+   *
+   * Available at policy-build time because the Kernel address derives from the
+   * SUDO validator alone; the permission plugin is enabled at UserOp time and
+   * does not affect it. Both signers derive a sudo-only account first, pin it
+   * here, and then assert the final account matches.
+   */
+  smartAccount: Address,
+  extraTokens: readonly CustomToken[] = [],
+) {
   const spenders = allowedSpenders();
   const extras = usableExtraTokens(extraTokens);
+  const self = { condition: ParamCondition.EQUAL, value: smartAccount } as const;
 
   return [
     {
@@ -169,28 +188,65 @@ export function buildCallPermissions(caps: GrantCaps, extraTokens: readonly Cust
       valueLimit: 0n,
     },
     {
-      // Uniswap SwapRouter02: exactInputSingle only. Spend is bounded by the
-      // approve cap above — the router can pull nothing beyond it.
+      // Uniswap SwapRouter02: exactInputSingle only, AND the output must land
+      // in the agent's own account.
+      //
+      // Without the recipient pin, the approve cap above bounds only how much
+      // can be spent per call — not who receives the proceeds. A compromised
+      // agent could swap USDG for a token and direct the output anywhere, over
+      // and over, up to the daily cap. "Bounded by the approve cap" was true
+      // and beside the point: the money still left.
+      //
+      // WHY THE ARGS ARRAY IS SEVEN LONG FOR A ONE-PARAMETER FUNCTION. The
+      // call policy maps args[i] to calldata offset i*32 (see
+      // @zerodev/permissions callPolicyUtils getPermissionFromABI) — a FLAT
+      // positional mapping with no ABI arity check. ExactInputSingleParams is
+      // a tuple of seven STATIC members, so the ABI encoder lays it out inline
+      // as seven consecutive words rather than behind a pointer. Index 3 is
+      // therefore exactly `recipient`.
+      //
+      // That alignment is real but fragile: it depends on the tuple staying
+      // all-static and the member order not moving. wall.test.ts proves the
+      // offset against viem's own encoder rather than against this reasoning —
+      // if SwapRouter02's struct ever changes, that test fails loudly instead
+      // of the policy quietly constraining the wrong word.
       target: UNISWAP.swapRouter02 as Address,
       valueLimit: 0n,
       abi: UNISWAP_SWAP_ROUTER_ABI,
       functionName: "exactInputSingle",
+      args: [null, null, null, self, null, null, null],
     },
     {
-      // Morpho vault deposits, capped per call at the daily limit.
+      // Morpho vault deposits, capped per call at the daily limit — and the
+      // SHARES must come back to the agent's own account.
+      //
+      // Not in the original five exits, found while pinning the withdrawal:
+      // deposit(assets, receiver) mints vault shares to `receiver`. Unpinned,
+      // a compromised agent could spend the owner's USDG and mint the shares
+      // to itself elsewhere — the money leaves just as surely as a transfer,
+      // only wearing a deposit's clothes.
       target: MORPHO.steakhouseUsdgVault as Address,
       valueLimit: 0n,
       abi: VAULT_ABI,
       functionName: "deposit",
-      args: [{ condition: ParamCondition.LESS_THAN_OR_EQUAL, value: usdgUnits(caps.dailyUsdg) }, null],
+      args: [{ condition: ParamCondition.LESS_THAN_OR_EQUAL, value: usdgUnits(caps.dailyUsdg) }, self],
     },
     {
-      // Withdrawals back to the account are unrestricted in size — money coming
-      // home is not a risk the wall needs to bound.
+      // Withdrawals are unrestricted in SIZE — money coming home is not a risk
+      // the wall needs to bound. But "coming home" has to be enforced, not
+      // assumed: withdraw(assets, receiver, owner) takes a receiver, and with
+      // no args at all the session key could drain the entire vault position
+      // to any address in one call, uncapped, because the size rule that would
+      // have bounded it was deliberately absent.
+      //
+      // The old comment described the INTENT ("money coming home") while the
+      // policy permitted the opposite. Size stays unbounded; the destination
+      // does not.
       target: MORPHO.steakhouseUsdgVault as Address,
       valueLimit: 0n,
       abi: VAULT_ABI,
       functionName: "withdraw",
+      args: [null, self, null],
     },
     {
       // Permit2 may be told to grant an allowance, but ONLY to the
@@ -224,6 +280,8 @@ export function buildCallPermissions(caps: GrantCaps, extraTokens: readonly Cust
  */
 export function buildWallPolicies(args: {
   caps: GrantCaps;
+  /** The agent's own account — see buildCallPermissions. Required, never defaulted. */
+  smartAccount: Address;
   extraTokens?: readonly CustomToken[];
   now?: number;
 }) {
@@ -237,7 +295,7 @@ export function buildWallPolicies(args: {
     toRateLimitPolicy({ count: args.caps.maxOpsPerDay, interval: 86_400 }),
     toCallPolicy({
       policyVersion: CallPolicyVersion.V0_0_4,
-      permissions: buildCallPermissions(args.caps, args.extraTokens) as never,
+      permissions: buildCallPermissions(args.caps, args.smartAccount, args.extraTokens) as never,
     }),
   ];
 

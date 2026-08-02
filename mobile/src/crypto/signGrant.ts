@@ -76,8 +76,23 @@ export async function signGrant(args: {
   const sessionPrivateKey = generatePrivateKey();
   const sessionSigner = await toECDSASigner({ signer: privateKeyToAccount(sessionPrivateKey) });
 
+  // The address BEFORE the wall, because the wall pins value to it. The Kernel
+  // address derives from the sudo validator alone — the permission plugin is
+  // enabled at UserOp time and does not affect it — so this is knowable now,
+  // and asserted identical below.
+  say("deriving your account");
+  const sudoOnlyAccount = await createKernelAccount(publicClient, {
+    entryPoint,
+    kernelVersion: KERNEL_V3_3,
+    plugins: { sudo: ecdsaValidator },
+  });
+
   say("assembling the wall");
-  const { policies, now, expiresAt } = buildWallPolicies({ caps: args.caps, extraTokens: args.extraTokens });
+  const { policies, now, expiresAt } = buildWallPolicies({
+    caps: args.caps,
+    smartAccount: sudoOnlyAccount.address,
+    extraTokens: args.extraTokens,
+  });
 
   say("attaching the permissions");
   const permissionValidator = await toPermissionValidator(publicClient, {
@@ -97,6 +112,16 @@ export async function signGrant(args: {
     kernelVersion: KERNEL_V3_3,
     plugins: { sudo: ecdsaValidator, regular: permissionValidator },
   });
+
+  // Same premise check the dashboard makes: the wall's recipient pins are only
+  // correct while the permission plugin leaves the address alone. Fail before
+  // sealing, never after.
+  if (account.address.toLowerCase() !== sudoOnlyAccount.address.toLowerCase()) {
+    throw new Error(
+      `refusing to sign: the permission plugin changed the account address ` +
+        `(${sudoOnlyAccount.address} → ${account.address}), so the wall's recipient pins are wrong.`,
+    );
+  }
 
   say("signing");
   const serialized = await serializePermissionAccount(account, sessionPrivateKey);
