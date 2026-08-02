@@ -17,6 +17,7 @@ import {
   type StoredGrant,
 } from "@merrymen/core";
 import { accountFromMnemonic } from "./mnemonic";
+import { isMock } from "@/net/api";
 
 /**
  * Sign a grant on the phone.
@@ -54,6 +55,30 @@ export async function signGrant(args: {
   rpcUrl?: string;
   onProgress?: SignProgress;
 }): Promise<SignedGrant> {
+  // A DEMO BUILD MUST NOT MINT A FUNDABLE ACCOUNT.
+  //
+  // `isMock` used to gate only what the screens DISPLAY — the feed and the
+  // Telegram card. It never reached here, and there is no testnet path: the
+  // chain below is Robinhood Chain 4663, mainnet, unconditionally. So a demo
+  // build generated a real key, derived a real mainnet smart account, showed
+  // the owner its address, and then reported a portfolio that was entirely
+  // invented. Anyone who funded that address had put real money somewhere the
+  // app was lying about, with one small chip as the only warning.
+  //
+  // The guard lives at the signing chokepoint rather than on the screen,
+  // because the screen is reachable by deep link (`merrymen://onboarding/grant`)
+  // and a UI-only check would be routed around rather than enforced.
+  //
+  // Deliberately NOT applied to recovery: sweeping funds out is the escape
+  // hatch, and blocking it would strand anyone who reached this state before
+  // the guard existed. Close the trap, keep the exit.
+  if (isMock) {
+    throw new Error(
+      "This is a demo build — it reads generated data, so it will not sign a real permission wall. " +
+        "Install a build configured for your own agent to do that.",
+    );
+  }
+
   const say = args.onProgress ?? (() => {});
   const chain = robinhoodChain;
   const publicClient = createPublicClient({

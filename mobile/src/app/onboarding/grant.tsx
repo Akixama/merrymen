@@ -3,6 +3,7 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from
 import { router } from "expo-router";
 import { signGrant } from "@/crypto/signGrant";
 import { saveGrant } from "@/crypto/grantStore";
+import { isMock } from "@/net/api";
 // A VALUE import, not just a type. The tradeable set is read from the shared core
 // package so the wall lists what the key may actually touch — and because a
 // type-only import would be erased at compile time, leaving the Metro alias for
@@ -97,6 +98,32 @@ export default function Grant() {
       setBusy(false);
     }
   }, [caps]);
+
+  // Say it before the walkthrough, not as a thrown error at the end of it.
+  // signGrant refuses too — that is the real enforcement, and this is the part
+  // that stops someone reading four screens of caps that will never be signed.
+  if (isMock) {
+    return (
+      <ScrollView
+        style={styles.root}
+        contentContainerStyle={[styles.content, { paddingTop: topPad, paddingBottom: bottomPad }]}>
+        <Text style={styles.h1}>Not in a demo build</Text>
+        <Text style={styles.lede}>
+          This build reads generated data — the balances and trades it shows are invented on the phone. So it
+          will not sign a permission wall, because signing one would create a real account on Robinhood Chain
+          that real money could be sent to, and every number this app then showed you about it would be
+          fiction.
+        </Text>
+        <Text style={styles.lede}>
+          Your recovery phrase is real and is safe on this device. To actually run an agent, install a build
+          pointed at your own worker.
+        </Text>
+        <Pressable style={styles.primary} onPress={() => router.replace("/")}>
+          <Text style={styles.primaryText}>Look around the demo</Text>
+        </Pressable>
+      </ScrollView>
+    );
+  }
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={[styles.content, { paddingTop: topPad, paddingBottom: bottomPad }]}>
