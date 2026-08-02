@@ -43,6 +43,28 @@ const DESKTOP_VERSION = "0.1.7";
 const DESKTOP_SIZE = "147 MB";
 const WINDOWS_DOWNLOAD = `${GITHUB}/releases/download/desktop-v${DESKTOP_VERSION}/merrymen.Setup.${DESKTOP_VERSION}.exe`;
 
+/**
+ * The Android build, and it is NOT the desktop app's equal — do not let the copy
+ * imply it is.
+ *
+ * This is the `demo` EAS profile: it ships with no feed origin, so every balance,
+ * position and trade it shows is generated on the phone. It also refuses to sign
+ * a permission wall (mobile/src/crypto/signGrant.ts throws when isMock), because
+ * signing one would mint a real Robinhood Chain account that real money could be
+ * sent to while the app reported fiction about it. So the honest label is "demo",
+ * the size line says the numbers are invented, and the button never sits under a
+ * heading that promises a working agent.
+ *
+ * Hosted as a RELEASE ASSET, not in the repo: at 108 MB the APK is over GitHub's
+ * 100 MiB per-file limit and a push carrying it is rejected outright.
+ *
+ * Same rule as the Windows link — bump version and size together, and deep-link
+ * the exact artifact rather than the releases page.
+ */
+const ANDROID_VERSION = "0.1.0";
+const ANDROID_SIZE = "108 MB";
+const ANDROID_DOWNLOAD = `${GITHUB}/releases/download/mobile-v${ANDROID_VERSION}/merrymen-demo-${ANDROID_VERSION}.apk`;
+
 function Wordmark() {
   return (
     <div className="wordmark-wrap" aria-hidden>
@@ -109,6 +131,12 @@ export default function Home() {
             <a href={WINDOWS_DOWNLOAD} className="btn btn-ghost btn-lg">
               <Icon name="arrow" size={15} /> Download for Windows
             </a>
+            {/* Labelled "demo" in the button itself, not only in the small print
+                underneath. Someone who reads nothing but the buttons must still
+                come away knowing this one does not trade. */}
+            <a href={ANDROID_DOWNLOAD} className="btn btn-ghost btn-lg">
+              <Icon name="arrow" size={15} /> Android demo
+            </a>
             <a href={GITHUB} target="_blank" rel="noreferrer" className="btn btn-ghost btn-lg">
               View on GitHub
             </a>
@@ -119,6 +147,9 @@ export default function Home() {
             <span style={{ opacity: 0.75 }}>
               Windows {DESKTOP_VERSION} · {DESKTOP_SIZE} · macOS and Linux via{" "}
               <a className="link" href="#install">the one-line install</a>
+              <br />
+              Android {ANDROID_VERSION} · {ANDROID_SIZE} · a look around only — every number in it is
+              generated on the phone, and it will not sign a wall or trade
             </span>
           </div>
         </div>
