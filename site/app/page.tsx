@@ -131,11 +131,13 @@ export default function Home() {
             <a href={WINDOWS_DOWNLOAD} className="btn btn-ghost btn-lg">
               <Icon name="arrow" size={15} /> Download for Windows
             </a>
-            {/* Labelled "demo" in the button itself, not only in the small print
-                underneath. Someone who reads nothing but the buttons must still
-                come away knowing this one does not trade. */}
+            {/* The button says "beta". That word implies an early build of a
+                working thing, and this one shows invented numbers and will not
+                sign a wall — so the qualifier the button no longer carries has
+                to be unmissable in the line directly beneath it, not buried in
+                the small print with the file size. */}
             <a href={ANDROID_DOWNLOAD} className="btn btn-ghost btn-lg">
-              <Icon name="arrow" size={15} /> Android demo
+              <Icon name="arrow" size={15} /> Download mobile beta
             </a>
             <a href={GITHUB} target="_blank" rel="noreferrer" className="btn btn-ghost btn-lg">
               View on GitHub
@@ -148,8 +150,15 @@ export default function Home() {
               Windows {DESKTOP_VERSION} · {DESKTOP_SIZE} · macOS and Linux via{" "}
               <a className="link" href="#install">the one-line install</a>
               <br />
-              Android {ANDROID_VERSION} · {ANDROID_SIZE} · a look around only — every number in it is
-              generated on the phone, and it will not sign a wall or trade
+              Android {ANDROID_VERSION} · {ANDROID_SIZE}
+            </span>
+            <br />
+            {/* Full opacity, on its own line, and it leads with what the build
+                CANNOT do. This sentence is now the only thing standing between
+                "beta" and someone expecting to see their own money in it. */}
+            <span>
+              The mobile beta doesn&apos;t trade yet — it shows generated data, and it won&apos;t sign a
+              permission wall.
             </span>
           </div>
         </div>
