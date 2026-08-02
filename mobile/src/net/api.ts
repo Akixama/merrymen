@@ -15,7 +15,13 @@ import type { FeedResponse } from "./types";
  * not exist. Pointing this at a LAN worker is a DEVELOPMENT path only.
  */
 
-const ORIGIN = process.env.EXPO_PUBLIC_FEED_ORIGIN ?? null;
+// Trimmed, and an empty string counts as unset. `?? null` alone treats "" as a
+// configured origin, so a blank EAS environment variable — the easy way to get
+// one — would leave the app fetching `/api/feed` against nothing instead of
+// falling back to the mock. Failing to the honest default is the safe direction;
+// scripts/guard-release.mjs is what stops a release taking that default silently.
+const RAW = (process.env.EXPO_PUBLIC_FEED_ORIGIN ?? "").trim();
+const ORIGIN = RAW === "" ? null : RAW;
 
 /** True when running on generated data rather than a real agent. */
 export const isMock = ORIGIN === null;
