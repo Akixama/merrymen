@@ -61,7 +61,10 @@ const WINDOWS_DOWNLOAD = `${GITHUB}/releases/download/desktop-v${DESKTOP_VERSION
  * Same rule as the Windows link — bump version and size together, and deep-link
  * the exact artifact rather than the releases page.
  */
-const ANDROID_VERSION = "0.1.0";
+// 0.1.0 crashed on launch on every Android device — its release page now says so
+// rather than quietly serving a dead build. Bumping this constant is the whole
+// fix on the site's side, because the URL is derived from it.
+const ANDROID_VERSION = "0.1.1";
 const ANDROID_SIZE = "108 MB";
 const ANDROID_DOWNLOAD = `${GITHUB}/releases/download/mobile-v${ANDROID_VERSION}/merrymen-demo-${ANDROID_VERSION}.apk`;
 
