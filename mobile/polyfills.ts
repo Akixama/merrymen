@@ -18,7 +18,24 @@
 //    has NO TextDecoder — verified absent at hermes v0.16.0 and v0.17.0 (RN 0.86.2,
 //    our target, is Hermes 0.17). This must load before any import of
 //    viem / ox / @zerodev.
-import "fastestsmallesttextencoderdecoder";
+//
+//    THE DEEP PATH IS MANDATORY. DO NOT "TIDY" THIS TO THE BARE SPECIFIER.
+//
+//    The package's "main" is NodeJS/EncoderAndDecoderNodeJS.min.js and its
+//    "browser" is EncoderDecoderTogether.min.js. Metro's WEB target honours
+//    "browser"; its NATIVE target uses "main" — so a bare import gives web the
+//    safe build and Android the Node one. The Node build does this at module
+//    scope:
+//
+//        try{ !n && q.require && (n=q.require("Buffer")); var D=n.prototype; … }catch(c){}
+//        var x = n.allocUnsafe,          // <- OUTSIDE the try
+//
+//    Hermes has no Buffer global and no q.require, so `n` is undefined, the try
+//    swallows the first throw, and `n.allocUnsafe` throws a TypeError during the
+//    FIRST import of _layout.tsx. The app died on launch, on every Android
+//    device, while the web preview was perfect — which is exactly why it shipped.
+//    Shipped in 0.1.0 and fixed here.
+import "fastestsmallesttextencoderdecoder/EncoderDecoderTogether.min.js";
 
 // 2. crypto.getRandomValues. React Native installs no `crypto` global at all.
 //    Needed for KEY GENERATION only — ECDSA signing here is deterministic
