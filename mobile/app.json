@@ -3,7 +3,7 @@
     "name": "merrymen",
     "slug": "merrymen",
     "owner": "merrymen",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "merrymen",
@@ -20,8 +20,7 @@
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE",
         "android.permission.VIBRATE",
-        "android.permission.READ_MEDIA_IMAGES",
-        "android.permission.DETECT_SCREEN_CAPTURE"
+        "android.permission.READ_MEDIA_IMAGES"
       ],
       "adaptiveIcon": {
         "backgroundColor": "#0d1512",
