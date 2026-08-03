@@ -1,9 +1,8 @@
 // polyfills.ts
 //
 // MUST be the first import of src/app/_layout.tsx, above every other import.
-// The order below is load-bearing — do not reorder it, and do not let a formatter
-// sort these imports. Two specific reasons, both of which fail at runtime rather
-// than at build time, which is what makes them dangerous:
+// What this file installs is load-bearing, and every failure here is a RUNTIME
+// one — nothing below fails a build, which is what makes it dangerous:
 //
 //   - viem and ox construct `new TextEncoder()` / `new TextDecoder()` at MODULE
 //     scope. So `import 'viem'` itself throws if those globals are absent — there
@@ -13,40 +12,29 @@
 //     first evaluation and never re-reads it. A getRandomValues polyfill
 //     installed after the first viem import anywhere in the graph is therefore
 //     permanently invisible, and key generation silently gets no entropy.
+//
+// READ THE ORDER AS WRITTEN. The one `import` below is hoisted above the
+// statements regardless of where it sits, so it is placed first to match. The
+// text codecs are installed with `require` inside a function precisely so their
+// timing is controllable rather than hoisted — see installTextCodecs.
 
-// 1. TextDecoder. Hermes ships TextEncoder, atob and btoa as engine intrinsics but
-//    has NO TextDecoder — verified absent at hermes v0.16.0 and v0.17.0 (RN 0.86.2,
-//    our target, is Hermes 0.17). This must load before any import of
-//    viem / ox / @zerodev.
-//
-//    THE DEEP PATH IS MANDATORY. DO NOT "TIDY" THIS TO THE BARE SPECIFIER.
-//
-//    The package's "main" is NodeJS/EncoderAndDecoderNodeJS.min.js and its
-//    "browser" is EncoderDecoderTogether.min.js. Metro's WEB target honours
-//    "browser"; its NATIVE target uses "main" — so a bare import gives web the
-//    safe build and Android the Node one. The Node build does this at module
-//    scope:
-//
-//        try{ !n && q.require && (n=q.require("Buffer")); var D=n.prototype; … }catch(c){}
-//        var x = n.allocUnsafe,          // <- OUTSIDE the try
-//
-//    Hermes has no Buffer global and no q.require, so `n` is undefined, the try
-//    swallows the first throw, and `n.allocUnsafe` throws a TypeError during the
-//    FIRST import of _layout.tsx. The app died on launch, on every Android
-//    device, while the web preview was perfect — which is exactly why it shipped.
-//    Shipped in 0.1.0 and fixed here.
-import "fastestsmallesttextencoderdecoder/EncoderDecoderTogether.min.js";
-
-// 2. crypto.getRandomValues. React Native installs no `crypto` global at all.
-//    Needed for KEY GENERATION only — ECDSA signing here is deterministic
-//    (RFC-6979) and consumes no entropy.
+// crypto.getRandomValues. React Native installs no `crypto` global at all.
+// Needed for KEY GENERATION only — ECDSA signing here is deterministic
+// (RFC-6979) and consumes no entropy. Independent of the codecs below.
 import "react-native-get-random-values";
+import { installTextCodecs } from "./textCodecs";
 
-// 3. btoa / atob. Native in Hermes, so this branch is dead on-device; it exists so
-//    a JSC or web target does not fail on the grant-serialization path, where
-//    @zerodev/permissions calls btoa. `base-64` is installed rather than left as a
-//    bare require inside a dead branch: Metro resolves require() statically, so an
-//    uninstalled module fails the BUILD even on a code path that never runs.
+// TextEncoder / TextDecoder. The whole reason this is a function call and not a
+// bare import lives in textCodecs.ts — read it before touching this line. Short
+// version: the shim self-disables on Hermes, which is how 0.1.0 shipped a build
+// that crashed on launch on every Android device and was perfect on web.
+installTextCodecs();
+
+// btoa / atob. Native in Hermes, so this branch is dead on-device; it exists so
+// a JSC or web target does not fail on the grant-serialization path, where
+// @zerodev/permissions calls btoa. `base-64` is installed rather than left as a
+// bare require inside a dead branch: Metro resolves require() statically, so an
+// uninstalled module fails the BUILD even on a code path that never runs.
 if (typeof globalThis.btoa !== "function") {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const b64 = require("base-64");
@@ -54,9 +42,12 @@ if (typeof globalThis.btoa !== "function") {
   globalThis.atob = b64.decode;
 }
 
-// 4. Fail loudly at startup rather than at grant time if any of the above ever
-//    regresses. A missing global surfaces here as one obvious crash on launch,
-//    instead of as a mysterious failure the first time a user signs something.
+// Fail loudly at startup rather than at grant time if any of the above ever
+// regresses. A missing global surfaces here as one obvious crash on launch,
+// instead of as a mysterious failure the first time a user signs something.
+//
+// This is not theoretical: 0.1.0 shipped with TextDecoder missing and every
+// Android install died right here, on this line, before any app code ran.
 for (const k of ["TextEncoder", "TextDecoder", "btoa", "atob"] as const) {
   if (typeof (globalThis as Record<string, unknown>)[k] !== "function") {
     throw new Error(`polyfills.ts: missing global ${k}`);
@@ -65,5 +56,3 @@ for (const k of ["TextEncoder", "TextDecoder", "btoa", "atob"] as const) {
 if (typeof globalThis.crypto?.getRandomValues !== "function") {
   throw new Error("polyfills.ts: missing crypto.getRandomValues");
 }
-
-export {};
