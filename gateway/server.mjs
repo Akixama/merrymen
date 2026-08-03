@@ -18,6 +18,7 @@ import { createPublicClient, defineChain, http } from "viem";
 import { createGateway, clientIp } from "./lib/core.mjs";
 import { createStore, hasRedis } from "./lib/store.mjs";
 import { CLAIM_HTML } from "./lib/claimPage.mjs";
+import { addSignup, signupCount } from "./lib/signups.mjs";
 
 // ── config (env) ─────────────────────────────────────────────────────────────
 const PORT = Number(process.env.PORT || 8787);
@@ -54,6 +55,10 @@ const chain = defineChain({
 });
 const publicClient = createPublicClient({ chain, transport: http(RPC) });
 
+// Hoisted rather than inlined into createGateway: the signup route needs the
+// same rate limiter, and two stores would mean two independent counters.
+const store = createStore();
+
 const gw = createGateway({
   secret: SECRET,
   bitqueryKey: BITQUERY_KEY,
@@ -64,7 +69,7 @@ const gw = createGateway({
   minTokens: MIN_TOKENS,
   tokenAddress: TOKEN_ADDRESS,
   publicClient,
-  store: createStore(),
+  store,
 });
 
 // ── http plumbing ────────────────────────────────────────────────────────────
@@ -96,8 +101,35 @@ function readBody(req) {
 // readable from the marketing site's origin. Never widen this to a blanket
 // header — the value of the default is that it applies to everything holding a
 // credential.
+/**
+ * Origins allowed to POST personal data to this gateway.
+ *
+ * A wildcard is fine for /memescope, which is a public GET returning market data
+ * that reveals nobody. It is NOT fine for the signup route: `*` would let any
+ * page on the internet drive the form, so a phishing clone could collect
+ * addresses into YOUR list and point at the real endpoint to look legitimate.
+ * Named origins only, and the browser enforces it.
+ */
+const SIGNUP_ORIGINS = new Set([
+  "https://merrymen.dev",
+  "https://www.merrymen.dev",
+  "http://localhost:3000",
+  "http://localhost:3999",
+]);
+
+function signupCorsHeaders(origin) {
+  if (!origin || !SIGNUP_ORIGINS.has(origin)) return undefined;
+  return {
+    "access-control-allow-origin": origin,
+    "access-control-allow-methods": "POST, OPTIONS",
+    "access-control-allow-headers": "content-type",
+    "access-control-max-age": "86400",
+    vary: "origin",
+  };
+}
+
 function respond(res, r) {
-  const cors = r.cors ? { "access-control-allow-origin": "*" } : undefined;
+  const cors = r.corsHeaders ?? (r.cors ? { "access-control-allow-origin": "*" } : undefined);
   if (r.html !== undefined) {
     res.writeHead(r.status, { "content-type": "text/html; charset=utf-8", ...cors });
     return res.end(r.html);
@@ -116,7 +148,12 @@ const server = createServer(async (req, res) => {
   const ip = clientIp(req.headers["x-forwarded-for"], req.socket?.remoteAddress);
 
   try {
-    if (req.method === "OPTIONS") {
+    // Blanket preflight answer, with NO cors headers — which is what makes every
+    // other route uncallable from a page. /ios-beta is the one route that must
+    // answer a real preflight, so it is excluded here and handles its own below.
+    // Without this exclusion the browser gets a 204 carrying no
+    // access-control-allow-origin and blocks the POST it was checking.
+    if (req.method === "OPTIONS" && pathname !== "/ios-beta") {
       res.writeHead(204);
       return res.end();
     }
@@ -170,6 +207,59 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && pathname === "/memescope") {
       const r = await gw.memescope({ ip });
       return respond(res, { ...r, cors: true });
+    }
+
+    /**
+     * The iOS beta waiting list.
+     *
+     * The ONLY route on this gateway that accepts personal data, and the only
+     * one whose CORS is a named-origin allowlist rather than absent or `*`.
+     *
+     * Deliberately unauthenticated: it is a public sign-up form, so there is no
+     * session to forge and CSRF is meaningless. What it does need is abuse
+     * control, which is the rate limit below plus a honeypot — a real person
+     * never fills a field they cannot see.
+     */
+    if (pathname === "/ios-beta") {
+      const corsHeaders = signupCorsHeaders(req.headers.origin);
+
+      // Preflight. A cross-origin JSON POST always sends one.
+      if (req.method === "OPTIONS") {
+        return respond(res, { status: corsHeaders ? 204 : 403, json: {}, corsHeaders });
+      }
+
+      if (req.method === "GET") {
+        // A count reveals nobody and lets the page say "join N others".
+        return respond(res, { status: 200, json: { count: await signupCount() }, corsHeaders });
+      }
+
+      if (req.method === "POST") {
+        // Ten attempts an hour per address is far above any honest use and far
+        // below what makes this endpoint worth abusing. Fails OPEN on a store
+        // blip — a rate-limiter outage must not silently eat real signups.
+        if (!(await store.rateHit(`ios:${ip}`, 10, 3600))) {
+          return respond(res, { status: 429, json: { error: "too many attempts — try again later" }, corsHeaders });
+        }
+
+        let body;
+        try {
+          body = JSON.parse(await readBody(req));
+        } catch {
+          return respond(res, { status: 400, json: { error: "bad body" }, corsHeaders });
+        }
+
+        // Honeypot: a hidden field no human can see or fill. Accept the request
+        // so the bot learns nothing, and write nothing.
+        if (typeof body?.company === "string" && body.company.trim() !== "") {
+          return respond(res, { status: 200, json: { ok: true, already: true }, corsHeaders });
+        }
+
+        const r = await addSignup({ email: body?.email, platform: "ios" });
+        if (!r.ok) return respond(res, { status: 400, json: { error: r.reason }, corsHeaders });
+        return respond(res, { status: 200, json: { ok: true, already: r.already, count: r.count }, corsHeaders });
+      }
+
+      return respond(res, { status: 405, json: { error: "method not allowed" }, corsHeaders });
     }
 
     respond(res, { status: 404, json: { error: "not found" } });

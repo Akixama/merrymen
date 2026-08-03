@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Icon, type IconName } from "@/components/Icon";
 import { Parallax } from "@/components/Parallax";
 import { Marquee } from "@/components/Marquee";
+import { IosBetaForm } from "@/components/IosBetaForm";
 
 const MARQUEE = [
   "Self-hosted", "Your keys, your caps", "On-chain permission wall", "LLM proposes, code disposes",
@@ -165,6 +166,18 @@ export default function Home() {
               The mobile beta doesn&apos;t trade yet — it shows generated data, and it won&apos;t sign a
               permission wall.
             </span>
+          </div>
+
+          {/* iOS has no build at all — not a smaller one, none. So this is a
+              waiting list and says so; it does not sit beside the Android button
+              implying parity. */}
+          <div className="beta-block" data-reveal="up" style={{ ["--d" as string]: "300ms" }}>
+            <h2 className="beta-head">On iPhone?</h2>
+            <p className="beta-lede">
+              There&apos;s no iOS build yet. Leave your email and you&apos;ll get one message when
+              there is something to install — no newsletter, no drip campaign.
+            </p>
+            <IosBetaForm />
           </div>
         </div>
         <Wordmark />

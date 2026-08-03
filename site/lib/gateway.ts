@@ -58,3 +58,56 @@ export async function fetchScope(signal?: AbortSignal): Promise<ScopeOutcome> {
     return { ok: false, kind: "offline", message: "Couldn't reach the gateway." };
   }
 }
+
+/* ── iOS beta waiting list ─────────────────────────────────────────────────── */
+
+export type SignupOutcome =
+  | { ok: true; already: boolean; count: number }
+  | { ok: false; message: string };
+
+/**
+ * Join the iOS beta list.
+ *
+ * The ONE call in this file that sends personal data, and the only gateway route
+ * with a named-origin CORS allowlist rather than none — see the note at the top
+ * of this file about why every other route deliberately serves no ACAO. That
+ * rule stands; this is a documented exception, not a loophole to widen.
+ *
+ * The honeypot field is sent as `company`. A real person never fills a field
+ * they cannot see, so a non-empty value marks a bot; the server accepts the
+ * request and writes nothing, which tells the bot nothing.
+ */
+export async function joinIosBeta(email: string, honeypot: string, signal?: AbortSignal): Promise<SignupOutcome> {
+  try {
+    const res = await fetch(`${GATEWAY_ORIGIN}/ios-beta`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email, company: honeypot }),
+      signal,
+    });
+    const data = (await res.json().catch(() => ({}))) as { ok?: boolean; already?: boolean; count?: number; error?: string };
+    if (res.status === 429) {
+      return { ok: false, message: "That's a lot of tries. Give it an hour." };
+    }
+    if (!res.ok || !data.ok) {
+      // The server's reason is written for a person to read, so pass it through
+      // rather than replacing it with something vaguer.
+      return { ok: false, message: data.error || "Couldn't save that — try again in a moment." };
+    }
+    return { ok: true, already: Boolean(data.already), count: Number(data.count ?? 0) };
+  } catch {
+    return { ok: false, message: "Couldn't reach the server. Check your connection and try again." };
+  }
+}
+
+/** How many are waiting. Returns null rather than guessing when unreachable. */
+export async function iosBetaCount(signal?: AbortSignal): Promise<number | null> {
+  try {
+    const res = await fetch(`${GATEWAY_ORIGIN}/ios-beta`, { signal, cache: "no-store" });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { count?: number };
+    return typeof data.count === "number" ? data.count : null;
+  } catch {
+    return null;
+  }
+}
