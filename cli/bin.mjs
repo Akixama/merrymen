@@ -857,70 +857,14 @@ async function strategyCmd(sub, name) {
     console.log(`  edit it, then select "${name}" in /settings or: merrymen onboard`);
     return;
   }
-  if (sub === "backtest") {
-  const args = process.argv.slice(4);
-  const fileFlagIdx = args.indexOf("--file");
-  const barsPath = fileFlagIdx >= 0 ? args[fileFlagIdx + 1] : null;
-
-  if (!name) {
-    bad("usage: merrymen strategy backtest <name> --file bars.json");
-    process.exit(1);
-  }
-  const SUPPORTED = ["steady-basket", "weekend-gap"];
-  if (!SUPPORTED.includes(name)) {
-    bad(`"${name}" isn't backtestable yet — supported: ${SUPPORTED.join(", ")}`);
-    process.exit(1);
-  }
-
-  const { loadBarsFile } = await import("../cli/backtest-bars.js");
-  const { runBacktest } = await import("../worker/src/backtest.js");
-  const { buildStrategy, legsForUniverse } = await import("../worker/src/strategies/registry.js");
-
-  const samplePath = path.join(ROOT, "strategies", "sample-bars.json");
-  const bars = loadBarsFile(barsPath ?? samplePath);
-  if (!barsPath) console.log(dim(`no --file given — using bundled sample: ${samplePath}`));
-
-  const basketSymbols = [...new Set(bars.flatMap((b) => [...b.prices.keys()]))];
-  const legs = new Map(legsForUniverse(basketSymbols).map((l) => [l.symbol, l.token]));
-
-  const strategy = buildStrategy(name, {
-    swapRouter: "0x0000000000000000000000000000000000000001",
-    usdg6: (v) => BigInt(Math.round(v * 1e6)),
-    basketSymbols,
-    buyPerTickUsdg: 25,
-    idleFloorUsdg: 50,
-    gapEnterBudgetUsdg: 100,
-    llm: { creds: null, intervalMin: 60, maxActionUsdg: 0 },
+ if (sub === "backtest") {
+  const child = toolSpawn(localBin("tsx"), [path.join(ROOT, "worker", "src", "backtest-cli.ts"), ...rest], {
+    cwd: ROOT,
+    stdio: "inherit",
   });
-
-  const result = await runBacktest(
-    {
-      strategy,
-      legs,
-      initialCashUsdg: 1_000_000_000n,
-      limits: {
-        perTradeUsdg: 500_000_000n,
-        dailyUsdg: 500_000_000n,
-        allowedTargets: [],
-        allowedAssets: [...legs.values()],
-        maxDrawdownBps: 2000,
-        expiresAt: Math.floor(Date.now() / 1000) + 365 * 86_400,
-      },
-    },
-    bars,
-  );
-
-  console.log(bold(`\nbacktest: ${name}  (${bars.length} bars)`));
-  console.log(`  final equity   ${(Number(result.finalEquityUsdg) / 1e6).toFixed(2)} USDG`);
-  console.log(`  pnl            ${(Number(result.pnlUsdg) / 1e6).toFixed(2)} USDG`);
-  console.log(`  max drawdown   ${(result.maxDrawdownBps / 100).toFixed(2)}%`);
-  console.log(`  executed       ${result.executed}`);
-  if (result.rejected.length) {
-    console.log(`  rejected:`);
-    result.rejected.forEach((r) => console.log(`    ${r.rule}: ${r.count}`));
-  }
+  child.on("exit", (code) => process.exit(code ?? 1));
   return;
-                              }
+}
 
 bad("usage: merrymen strategy <list|new|backtest> [name]");
   process.exit(1);
