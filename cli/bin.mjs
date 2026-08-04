@@ -857,7 +857,29 @@ async function strategyCmd(sub, name) {
     console.log(`  edit it, then select "${name}" in /settings or: merrymen onboard`);
     return;
   }
-  bad("usage: merrymen strategy <list|new> [name]");
+  if (sub === "backtest") {
+    // anything after `strategy backtest <name>`, e.g. --file bars.json
+    const extraArgs = process.argv.slice(4);
+
+    // Resolve --file HERE, where we are still in the user's shell directory.
+    // The child is spawned with cwd: ROOT (it must be, to find tsx and the
+    // worker sources), so a relative path handed straight through would be
+    // opened relative to the installed package instead of the user's folder —
+    // `--file bars.json` looked for it inside node_modules/merrymen.
+    const fi = extraArgs.indexOf("--file");
+    if (fi >= 0 && extraArgs[fi + 1] && !extraArgs[fi + 1].startsWith("--")) {
+      extraArgs[fi + 1] = path.resolve(process.cwd(), extraArgs[fi + 1]);
+    }
+
+    const child = toolSpawn(
+      localBin("tsx"),
+      [path.join(ROOT, "worker", "src", "backtest-cli.ts"), name, ...extraArgs],
+      { cwd: ROOT, stdio: "inherit" },
+    );
+    child.on("exit", (code) => process.exit(code ?? 1));
+    return;
+  }
+  bad("usage: merrymen strategy <list|new|backtest> [name]");
   process.exit(1);
 }
 
