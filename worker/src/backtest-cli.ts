@@ -8,21 +8,43 @@ import { CASH, MORPHO } from "../../packages/core/src/index";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const [name, ...rest] = process.argv.slice(2);
 const fileFlagIdx = rest.indexOf("--file");
-const barsPath: string =
-  fileFlagIdx >= 0 && rest[fileFlagIdx + 1]
-    ? rest[fileFlagIdx + 1]!
-    : path.join(ROOT, "strategies", "sample-bars.json");
 
 const SUPPORTED = ["steady-basket", "weekend-gap"];
 if (!name || !SUPPORTED.includes(name)) {
-  console.error(`usage: merrymen strategy backtest <n> --file bars.json  (supported: ${SUPPORTED.join(", ")})`);
+  console.error(`usage: merrymen strategy backtest <name> --file bars.json  (supported: ${SUPPORTED.join(", ")})`);
   process.exit(1);
 }
+
+// `--file` with nothing after it used to fall through to the bundled sample and
+// exit 0, so a typo silently backtested three fake bars and reported a number
+// the user would reasonably read as their own. A backtest that quietly measures
+// the wrong data is worse than one that refuses.
+if (fileFlagIdx >= 0 && (!rest[fileFlagIdx + 1] || rest[fileFlagIdx + 1]!.startsWith("--"))) {
+  console.error("--file needs a path, e.g. --file bars.json");
+  process.exit(1);
+}
+
+const barsPath: string =
+  fileFlagIdx >= 0 ? rest[fileFlagIdx + 1]! : path.join(ROOT, "strategies", "sample-bars.json");
 if (fileFlagIdx < 0) console.log(`no --file given — using bundled sample: ${barsPath}`);
 
 const bars = loadBarsFile(barsPath);
 const basketSymbols = [...new Set(bars.flatMap((b) => [...b.prices.keys()]))];
 const legs = new Map(legsForUniverse(basketSymbols).map((l) => [l.symbol, l.token]));
+
+// legsForUniverse resolves against the known token registry and simply omits
+// anything it does not recognise. Unnamed, that turns a typo'd or unsupported
+// ticker into a clean-looking run over nothing — the same failure as above,
+// arriving by a different door. Say which symbols were dropped, and refuse
+// outright when none survive.
+const dropped = basketSymbols.filter((s) => !legs.has(s));
+if (dropped.length) {
+  console.error(`  not tradeable, ignored: ${dropped.join(", ")}`);
+}
+if (legs.size === 0) {
+  console.error(`no tradeable symbols in ${barsPath} — nothing to backtest.`);
+  process.exit(1);
+}
 
 const swapRouter = "0x0000000000000000000000000000000000000001" as const;
 const strategy = buildStrategy(name, {
