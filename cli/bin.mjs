@@ -179,10 +179,9 @@ function makePrompter() {
   const askSecret = (q) =>
     new Promise((res) => {
       const orig = rl._writeToOutput.bind(rl);
-      process.stdout.write(q);
+      console.log(q);
       rl._writeToOutput = (s) => {
         if (s.includes("\n") || s.includes("\r")) orig(s);
-        else rl.output.write("*");
       };
       rl.question("", (answer) => {
         rl._writeToOutput = orig;
@@ -379,6 +378,47 @@ async function onboard() {
   const bundlerKey = (await p.askSecret(`  Pimlico API key${keep(current.bundlerApiKey || current.bundlerUrl)}: `)).trim();
   if (bundlerKey) current.bundlerApiKey = bundlerKey;
 
+  async function fetchModels(provId, apiKey, customUrl) {
+    const MODELS_BASE = {
+      merrymen: "", groq: "https://api.groq.com/openai/v1", openai: "https://api.openai.com/v1",
+      anthropic: "https://api.anthropic.com", google: "https://generativelanguage.googleapis.com/v1beta/openai",
+      xai: "https://api.x.ai/v1", deepseek: "https://api.deepseek.com", mistral: "https://api.mistral.ai/v1",
+      openrouter: "https://openrouter.ai/api/v1", together: "https://api.together.xyz/v1",
+      perplexity: "https://api.perplexity.ai", cerebras: "https://api.cerebras.ai/v1",
+      fireworks: "https://api.fireworks.ai/inference/v1", ollama: "http://localhost:11434/v1",
+    };
+    let url, headers = {};
+    if (provId === "anthropic") {
+      url = "https://api.anthropic.com/v1/models";
+      if (apiKey) { headers["x-api-key"] = apiKey; headers["anthropic-version"] = "2023-06-01"; }
+    } else if (provId === "google") {
+      url = "https://generativelanguage.googleapis.com/v1beta/models";
+      if (apiKey) headers["x-goog-api-key"] = apiKey;
+    } else if (provId === "custom") {
+      if (!customUrl) return [];
+      url = customUrl.replace(/\/+$/, "") + "/models";
+      if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+    } else {
+      const b = MODELS_BASE[provId];
+      if (!b) return [];
+      url = b.replace(/\/+$/, "") + "/models";
+      if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+    }
+    try {
+      const res = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
+      if (!res.ok) return [];
+      const json = await res.json();
+      const raw = Array.isArray(json.data) ? json.data : Array.isArray(json.models) ? json.models : [];
+      const models = [];
+      for (const entry of raw) {
+        const id = entry?.id || (entry?.name || "").replace(/^models\//, "");
+        if (id && /^[A-Za-z0-9._/:-]{1,128}$/.test(id)) models.push(id);
+      }
+      models.sort((a, b) => a.localeCompare(b));
+      return models;
+    } catch { return []; }
+  }
+
   console.log(bold(`\n  ${c.arrow} 2/4 · give it a brain`) + dim("  (optional — free to test)"));
   // Mirrors packages/core/src/llm-providers.ts. Kept inline because this CLI is
   // plain ESM and can't import the TS core. keyField routes the key to the field
@@ -424,9 +464,31 @@ async function onboard() {
     const brainKey = (await p.askSecret(`  ${chosen.label} API key${keep(current[chosen.keyField])}: `)).trim();
     if (brainKey) current[chosen.keyField] = brainKey;
   }
-  const modelPrompt = current[chosen.modelField] || chosen.def || "provider default";
-  const brainModel = (await p.ask(`  model [${modelPrompt}]: `)).trim();
-  if (brainModel) current[chosen.modelField] = brainModel;
+  // ── auto-detect available models ──────────────────────────────
+  let brainModels = [];
+  if (chosen.id !== "merrymen") {
+    const ak = current[chosen.keyField]?.trim();
+    const cu = chosen.custom ? current.llmBaseUrl?.trim() : undefined;
+    process.stdout.write(dim("  fetching available models…"));
+    brainModels = await fetchModels(chosen.id, ak || "", cu);
+    process.stdout.write("\r\x1b[K");
+  }
+
+  if (brainModels.length > 0) {
+    console.log(dim("  Available models:"));
+    const curModel = current[chosen.modelField] || chosen.def;
+    brainModels.forEach((m, i) => {
+      const marker = m === curModel ? green(" ← current") : "";
+      console.log(`  ${i + 1}. ${m}${marker}`);
+    });
+    const pick = (await p.ask(`  pick 1-${brainModels.length} [blank keeps${curModel ? ` ${curModel}` : " default"}]: `)).trim();
+    const idx = Number(pick) - 1;
+    if (pick && Number.isInteger(idx) && brainModels[idx]) current[chosen.modelField] = brainModels[idx];
+  } else {
+    const modelPrompt = current[chosen.modelField] || chosen.def || "provider default";
+    const brainModel = (await p.ask(`  model [${modelPrompt}]: `)).trim();
+    if (brainModel) current[chosen.modelField] = brainModel;
+  }
 
   console.log(bold(`\n  ${c.arrow} 3/4 · pick your outlaw`) + dim("  (strategy)"));
   const custom = await listCustom();
