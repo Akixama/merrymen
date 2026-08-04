@@ -857,7 +857,17 @@ async function strategyCmd(sub, name) {
     console.log(`  edit it, then select "${name}" in /settings or: merrymen onboard`);
     return;
   }
-  bad("usage: merrymen strategy <list|new> [name]");
+ if (sub === "backtest") {
+  const extraArgs = process.argv.slice(4); // anything after `strategy backtest <name>`, e.g. --file bars.json
+  const child = toolSpawn(
+    localBin("tsx"),
+    [path.join(ROOT, "worker", "src", "backtest-cli.ts"), name, ...extraArgs],
+    { cwd: ROOT, stdio: "inherit" },
+  );
+  child.on("exit", (code) => process.exit(code ?? 1));
+  return;
+}
+bad("usage: merrymen strategy <list|new|backtest> [name]");
   process.exit(1);
 }
 
