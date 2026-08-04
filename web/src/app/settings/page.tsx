@@ -66,6 +66,10 @@ export default function SettingsPage() {
   // The grant the browser holds, so the basket can say which symbols this
   // signature can actually get back out of. null = none stored yet.
   const [storedGrant, setStoredGrant] = useState<StoredGrant | null>(null);
+  // AI provider model listing — fetched from the provider's models API.
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
 
   const loadTelegram = () =>
     fetch("/api/telegram")
@@ -90,6 +94,51 @@ export default function SettingsPage() {
       void loadTelegram();
     })();
   }, []);
+
+  // Debounced model fetch — triggers when provider, key, or custom URL changes.
+  useEffect(() => {
+    if (!view) return;
+    const providerId = draft.llmProvider ?? view.values.llmProvider ?? "groq";
+    const prov = view.llmProviders.find((p) => p.id === providerId);
+    if (!prov) { setAvailableModels([]); setModelsError(null); return; }
+
+    setAvailableModels([]);
+    setModelsLoading(true);
+    setModelsError(null);
+
+    const timer = setTimeout(async () => {
+      try {
+        const body: Record<string, string> = { provider: prov.id };
+        const kf = prov.id === "groq" ? "groqApiKey" : prov.id === "anthropic" ? "anthropicApiKey" : "llmApiKey";
+        const keyInDraft = draft[kf]?.trim();
+        if (keyInDraft) body.apiKey = keyInDraft;
+        if (prov.id === "custom") {
+          const bu = draft.llmBaseUrl?.trim() || (view.values.llmBaseUrl as string | undefined) || "";
+          if (bu) body.baseUrl = bu;
+        }
+        const res = await fetch("/api/models", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const j = (await res.json()) as { models?: string[]; error?: string };
+        if (res.ok && j.models) {
+          setAvailableModels(j.models);
+          setModelsError(null);
+        } else {
+          setAvailableModels([]);
+          setModelsError(j.error ?? "failed to list models");
+        }
+      } catch {
+        setAvailableModels([]);
+        setModelsError("network error");
+      } finally {
+        setModelsLoading(false);
+      }
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [view, draft.llmProvider, draft.groqApiKey, draft.anthropicApiKey, draft.llmApiKey, draft.llmBaseUrl]);
 
   const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setDraft((d) => ({ ...d, [k]: e.target.value }));
@@ -346,14 +395,28 @@ export default function SettingsPage() {
             )}
             <Field
               label="model"
-              hint={`Which model to run. Blank uses the provider default${prov.defaultModel ? ` (${prov.defaultModel})` : ""}.`}
+              hint={`Which model to run. Blank uses the provider default${prov.defaultModel ? ` (${prov.defaultModel})` : ""}.${modelsError ? ` Could not list models: ${modelsError}` : ""}`}
             >
-              <input
-                type="text"
-                placeholder={prov.defaultModel || "model id"}
-                value={v(providerModelField as keyof SettingsView["values"])}
-                onChange={set(providerModelField)}
-              />
+              {modelsLoading ? (
+                <span className="field-loading">listing models…</span>
+              ) : availableModels.length > 0 ? (
+                <select
+                  value={v(providerModelField as keyof SettingsView["values"])}
+                  onChange={set(providerModelField)}
+                >
+                  <option value="">default{prov.defaultModel ? ` (${prov.defaultModel})` : ""}</option>
+                  {availableModels.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  placeholder={prov.defaultModel || "model id"}
+                  value={v(providerModelField as keyof SettingsView["values"])}
+                  onChange={set(providerModelField)}
+                />
+              )}
             </Field>
             <Field
               label="Pimlico API key"

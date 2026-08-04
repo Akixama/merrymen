@@ -482,6 +482,18 @@ button { font: inherit; cursor: pointer; }
   font-family: var(--mono); font-size: 15px; font-weight: 600;
   padding: 9px 0;
 }
+.field-input select {
+  flex: 1; min-width: 0;
+  background: transparent; border: none; outline: none;
+  color: var(--text);
+  font-family: var(--mono); font-size: 15px; font-weight: 600;
+  padding: 9px 0;
+  cursor: pointer;
+}
+.field-loading {
+  font-family: var(--mono); font-size: 13px; color: var(--text-faint);
+  padding: 9px 0;
+}
 .field-unit { font-family: var(--mono); font-size: 10px; color: var(--text-faint); }
 
 .grant-summary {
@@ -1030,6 +1042,14 @@ button { font: inherit; cursor: pointer; }
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 12%, transparent);
 }
 .setup-look .field-input input { font-family: var(--font-jbmono); font-size: 14px; font-weight: 500; }
+.setup-look .field-input select {
+  flex: 1; min-width: 0;
+  background: transparent; border: none; outline: none;
+  color: var(--text);
+  font-family: var(--font-jbmono); font-size: 14px; font-weight: 500;
+  padding: 9px 0; cursor: pointer;
+  appearance: auto;
+}
 .setup-look .field-hint {
   font-family: var(--font-hanken); font-size: 12px; line-height: 1.5;
   color: var(--text-faint);
