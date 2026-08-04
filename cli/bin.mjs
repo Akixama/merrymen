@@ -858,14 +858,15 @@ async function strategyCmd(sub, name) {
     return;
   }
  if (sub === "backtest") {
-  const child = toolSpawn(localBin("tsx"), [path.join(ROOT, "worker", "src", "backtest-cli.ts"), ...rest], {
-    cwd: ROOT,
-    stdio: "inherit",
-  });
+  const extraArgs = process.argv.slice(4); // anything after `strategy backtest <name>`, e.g. --file bars.json
+  const child = toolSpawn(
+    localBin("tsx"),
+    [path.join(ROOT, "worker", "src", "backtest-cli.ts"), name, ...extraArgs],
+    { cwd: ROOT, stdio: "inherit" },
+  );
   child.on("exit", (code) => process.exit(code ?? 1));
   return;
 }
-
 bad("usage: merrymen strategy <list|new|backtest> [name]");
   process.exit(1);
 }
