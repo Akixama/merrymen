@@ -920,7 +920,9 @@ async function strategyCmd(sub, name) {
     result.rejected.forEach((r) => console.log(`    ${r.rule}: ${r.count}`));
   }
   return;
-                              }bad("usage: merrymen strategy <list|new|backtest> [name]");
+                              }
+
+bad("usage: merrymen strategy <list|new|backtest> [name]");
   process.exit(1);
 }
 
