@@ -58,7 +58,26 @@ export async function POST(req: Request) {
 
   let baseUrl = prov.baseUrl;
   if (prov.id === "custom") {
-    baseUrl = body.baseUrl?.trim() || saved.llmBaseUrl || "";
+    // WHOSE URL AND WHOSE KEY MUST NOT COME FROM DIFFERENT PLACES.
+    //
+    // Before this guard, POSTing {provider:"custom", baseUrl:"https://attacker"}
+    // with no apiKey made the route load the SAVED llmApiKey out of
+    // ~/.merrymen/settings.json and send it as `Authorization: Bearer` to that
+    // URL — a key-exfiltration oracle sitting on a dashboard that has no login.
+    // middleware.ts limits who can reach it, but "only locally exploitable" is
+    // not the standard for a file holding a paid API credential.
+    //
+    // So: a caller-supplied base URL may only ever be probed with a
+    // caller-supplied key. The stored key is reachable only through the stored
+    // URL, which is the pairing the user actually consented to.
+    const bodyUrl = body.baseUrl?.trim();
+    if (bodyUrl && bodyUrl !== saved.llmBaseUrl && !body.apiKey) {
+      return NextResponse.json(
+        { error: "a custom base URL must be sent with its own API key — the saved key is not used for an unsaved URL" },
+        { status: 400 },
+      );
+    }
+    baseUrl = bodyUrl || saved.llmBaseUrl || "";
     if (!baseUrl) {
       return NextResponse.json({ error: "custom provider requires a base URL" }, { status: 400 });
     }
