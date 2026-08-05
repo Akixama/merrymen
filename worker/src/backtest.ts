@@ -31,6 +31,8 @@ export interface BacktestConfig {
   executionCostBps?: number;
   /** Simple vault APY in bps applied to vault balance over elapsed time. */
   vaultApyBps?: number;
+  /** Capture every rejection for timeline UIs. Off by default to keep long runs bounded. */
+  collectRejectedEvents?: boolean;
 }
 
 export interface BacktestResult {
@@ -152,8 +154,10 @@ export async function runBacktest(cfg: BacktestConfig, bars: readonly Bar[]): Pr
       };
       const verdict = checkPolicy(intent, cfg.limits, state);
       if (!verdict.ok) {
-         rejectCounts.set(verdict.rule, (rejectCounts.get(verdict.rule) ?? 0) + 1);
-         rejectedEvents.push({ tSec: bar.tSec, rule: verdict.rule });
+        rejectCounts.set(verdict.rule, (rejectCounts.get(verdict.rule) ?? 0) + 1);
+        if (cfg.collectRejectedEvents) {
+          rejectedEvents.push({ tSec: bar.tSec, rule: verdict.rule });
+        }
         continue;
       }
       applyFill(intent);
@@ -211,14 +215,14 @@ export async function runBacktest(cfg: BacktestConfig, bars: readonly Bar[]): Pr
   const last = equitySeries[equitySeries.length - 1];
   const finalEquity = last ? last.equityUsdg : cfg.initialCashUsdg;
   return {
-  finalEquityUsdg: finalEquity,
-  pnlUsdg: finalEquity - cfg.initialCashUsdg,
-  maxDrawdownBps,
-  equitySeries,
-  executed,
-  rejected: [...rejectCounts.entries()].map(([rule, count]) => ({ rule, count })),
-  rejectedEvents,
-};
+    finalEquityUsdg: finalEquity,
+    pnlUsdg: finalEquity - cfg.initialCashUsdg,
+    maxDrawdownBps,
+    equitySeries,
+    executed,
+    rejected: [...rejectCounts.entries()].map(([rule, count]) => ({ rule, count })),
+    rejectedEvents,
+  };
 }
 
 export { ONE };

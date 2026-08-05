@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 interface SeriesPoint {
   tSec: number;
@@ -129,6 +129,13 @@ interface RunOutput {
 }
 
 interface PlaygroundResponse {
+  seed: number;
+  limits: {
+    perTradeUsdg: number;
+    dailyUsdg: number;
+    maxDrawdownPct: number;
+    maxOpsPerDay: number;
+  };
   primary: RunOutput;
   compare: RunOutput | null;
 }
@@ -152,6 +159,12 @@ const PRESETS: Preset[] = [
 
 const SYMBOL_OPTIONS = ["AAPL", "MSFT", "QQQ", "NVDA", "TSLA"];
 const DAY_PRESETS = [30, 90, 365];
+
+function randomSeed(): number {
+  const value = new Uint32Array(1);
+  crypto.getRandomValues(value);
+  return value[0]!;
+}
 
 function ResultStats({ result, label }: { result: RunOutput; label?: string }) {
   return (
@@ -190,11 +203,14 @@ export default function PlaygroundPage() {
   const [symbols, setSymbols] = useState<string[]>(["AAPL", "QQQ"]);
   const [days, setDays] = useState(90);
   const [startingCash, setStartingCash] = useState(1000);
+  const [seed, setSeed] = useState(0);
   const [compareOn, setCompareOn] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<PlaygroundResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [runId, setRunId] = useState(0);
+
+  useEffect(() => setSeed(randomSeed()), []);
 
   function toggleSymbol(s: string) {
     setSymbols((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]));
@@ -215,7 +231,7 @@ export default function PlaygroundPage() {
       const r = await fetch("/api/playground/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ strategy, compareStrategy, symbols, days, startingCashUsdg: startingCash }),
+        body: JSON.stringify({ strategy, compareStrategy, symbols, days, startingCashUsdg: startingCash, seed }),
       });
       const j = await r.json();
       if (!r.ok) setError(j.error ?? "run failed");
@@ -306,6 +322,23 @@ export default function PlaygroundPage() {
               />
             </label>
 
+            <label>
+              scenario seed
+              <span className="playground-seed-row">
+                <input
+                  type="number"
+                  min={0}
+                  max={0xffff_ffff}
+                  step={1}
+                  value={seed}
+                  onChange={(e) => setSeed(Number(e.target.value))}
+                />
+                <button type="button" className="circle-btn" onClick={() => setSeed(randomSeed())}>
+                  randomize
+                </button>
+              </span>
+            </label>
+
             <label className="playground-compare-toggle">
               <input type="checkbox" checked={compareOn} onChange={(e) => setCompareOn(e.target.checked)} />
               compare against {strategy === "steady-basket" ? "weekend-gap" : "steady-basket"}
@@ -320,6 +353,10 @@ export default function PlaygroundPage() {
 
           {result && (
             <div className="playground-result">
+              <p className="recover-sub mono">
+                signed wall · {result.limits.perTradeUsdg} USDG/trade · {result.limits.dailyUsdg} USDG/day ·{" "}
+                {result.limits.maxDrawdownPct}% drawdown · {result.limits.maxOpsPerDay} ops/day · seed {result.seed}
+              </p>
               <EquityCurve key={runId} series={series} />
               <ResultStats result={result.primary} label={result.compare ? result.primary.strategy : undefined} />
               {result.compare && <ResultStats result={result.compare} label={result.compare.strategy} />}

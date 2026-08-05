@@ -736,6 +736,17 @@ button { font: inherit; cursor: pointer; }
   flex-wrap: wrap;
 }
 
+.playground-seed-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.playground-seed-row .circle-btn {
+  flex: 0 0 auto;
+}
+
 @keyframes draw-curve {
   to {
     stroke-dashoffset: 0;

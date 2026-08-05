@@ -21,6 +21,7 @@
       "@merrymen/recover": ["../worker/src/recover.ts"],
       "@merrymen/backtest": ["../worker/src/backtest.ts"],
       "@merrymen/backtest-scenario": ["../worker/src/backtest-scenario.ts"],
+      "@merrymen/limits": ["../worker/src/limits.ts"],
       "@merrymen/strategies/*": ["../worker/src/strategies/*"]
     }
   },

@@ -24,6 +24,8 @@ export interface ScenarioConfig {
   drift?: number;
   /** Seed for a reproducible run (same seed -> same series). Default 42. */
   seed?: number;
+  /** First bar timestamp. Defaults to `days` ago and is injectable for tests. */
+  startTimeSec?: number;
 }
 
 const DAY_SEC = 86_400;
@@ -55,7 +57,7 @@ export function buildScenario(cfg: ScenarioConfig): Bar[] {
 
   const price = new Map(cfg.symbols.map((s) => [s, cfg.startPrice[s] ?? 100]));
   const bars: Bar[] = [];
-  const t0 = Math.floor(Date.now() / 1000) - cfg.days * DAY_SEC;
+  const t0 = cfg.startTimeSec ?? Math.floor(Date.now() / 1000) - cfg.days * DAY_SEC;
 
   for (let i = 0; i < cfg.days; i++) {
     const tSec = t0 + i * DAY_SEC;
